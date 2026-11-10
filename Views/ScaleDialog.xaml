@@ -1,0 +1,41 @@
+<Window x:Class="KubeUIApp.Views.ScaleDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Scale Deployment" Height="220" Width="420"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource TextLightBrush}"
+        FontFamily="Segoe UI" WindowStyle="ToolWindow">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="TxtTitle" Grid.Row="0" Text="Scale Deployment" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}"/>
+
+        <StackPanel Grid.Row="1" Margin="0,15,0,15" VerticalAlignment="Center">
+            <TextBlock Text="Target Replicas:" FontSize="13" Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,6"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="TxtReplicas" Grid.Column="0" Height="34" FontSize="14"/>
+                <Button Content="-" Grid.Column="1" Width="34" Height="34" Margin="6,0,0,0"
+                        Style="{StaticResource ModernBtn}" Click="OnMinusClick" FontSize="16" FontWeight="Bold"/>
+                <Button Content="+" Grid.Column="2" Width="34" Height="34" Margin="6,0,0,0"
+                        Style="{StaticResource ModernBtn}" Click="OnPlusClick" FontSize="16" FontWeight="Bold"/>
+            </Grid>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Cancel" IsCancel="True" Width="85" Height="32" Margin="0,0,10,0"
+                    Style="{StaticResource ModernBtn}" Click="OnCancelClick"/>
+            <Button Content="Scale" IsDefault="True" Width="85" Height="32"
+                    Style="{StaticResource PrimaryBtn}" Click="OnScaleClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

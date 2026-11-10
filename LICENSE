@@ -1,0 +1,47 @@
+Business Source License 1.1
+
+Parameters
+
+Licensor:
+    Puneeth D C
+
+Licensed Work:
+    KubeShift Manager (including all associated source code, manifests, documentation, and compiled binary releases).
+
+Additional Use Grant:
+    You are granted the right to use, copy, modify, and distribute the Licensed Work for personal, educational, testing, development, and non-commercial evaluation purposes.
+    Any deployment or use of the Licensed Work within a commercial organization, production environment, or for commercial management services requires a separate commercial license agreement from the Licensor.
+
+Change Date:
+    January 1, 2033
+
+Change License:
+    Apache License, Version 2.0
+
+
+--------------------------------------------------------------------------------
+
+Notice
+
+This software is licensed under the Business Source License 1.1 (the "License"). You may not use this software except in compliance with the License.
+
+You may obtain a copy of the License terms and conditions below.
+
+--------------------------------------------------------------------------------
+
+Terms and Conditions
+
+1. Grant of License.
+Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, and make non-production or non-commercial use of the Licensed Work only under the terms of the Additional Use Grant specified above.
+
+2. Commercial Use Restriction.
+Any use of the Licensed Work outside of the Additional Use Grant is strictly prohibited unless authorized under a separate commercial license agreement entered into directly with the Licensor.
+
+3. Effective Date and Change Date.
+This License is effective as of the date you obtain a copy of the Licensed Work. On the Change Date specified above, this License shall automatically convert and be superseded by the Change License specified above, and you may thereafter use the Licensed Work under the terms of the Change License.
+
+4. Notice Requirements.
+You must retain all copyright notices, trademarks, and this License text in all copies or substantial portions of the Licensed Work.
+
+5. Disclaimer of Warranties.
+THE LICENSED WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS IN THE LICENSED WORK.

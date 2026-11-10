@@ -1,0 +1,30 @@
+<Window x:Class="KubeUIApp.Views.PullImageDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pull Image" Height="220" Width="480"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource TextLightBrush}"
+        FontFamily="Segoe UI" WindowStyle="ToolWindow">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Pull Container / Docker Image" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentSuccessBrush}"/>
+
+        <StackPanel Grid.Row="1" Margin="0,15,0,15" VerticalAlignment="Center">
+            <TextBlock Text="Image Reference (e.g. docker.io/library/nginx:latest or quay.io/...):" FontSize="12" Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,6"/>
+            <TextBox x:Name="TxtImageName" Height="34" FontSize="13"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="Cancel" IsCancel="True" Width="85" Height="32" Margin="0,0,10,0"
+                    Style="{StaticResource ModernBtn}" Click="OnCancelClick"/>
+            <Button Content="Pull Image" IsDefault="True" Width="95" Height="32"
+                    Style="{StaticResource SuccessBtn}" Click="OnPullClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

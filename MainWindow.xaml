@@ -1,0 +1,947 @@
+<Window x:Class="KubeUIApp.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="clr-namespace:KubeUIApp.ViewModels"
+        mc:Ignorable="d"
+        Title="OpenShift &amp; MicroShift Kubernetes Manager (.NET Core)" 
+        Height="860" Width="1350" MinHeight="700" MinWidth="1100"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource BgDarkBrush}" Foreground="{DynamicResource TextLightBrush}"
+        FontFamily="Segoe UI">
+
+    <Window.DataContext>
+        <vm:MainViewModel/>
+    </Window.DataContext>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <!-- Top Connection Header -->
+            <RowDefinition Height="Auto"/>
+            <!-- Cluster & Node Telemetry Ribbon -->
+            <RowDefinition Height="Auto"/>
+            <!-- Main Content Area -->
+            <RowDefinition Height="*"/>
+            <!-- Behind-the-Scenes Activity Drawer -->
+            <RowDefinition Height="Auto"/>
+            <!-- Bottom Status Bar -->
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ================= TOP CONNECTION HEADER ================= -->
+        <Border Grid.Row="0" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="14,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Brand / Logo -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,20,0">
+                    <Border Width="34" Height="34" CornerRadius="8" Background="{DynamicResource AccentPrimaryBrush}" Margin="0,0,10,0">
+                        <TextBlock Text="☸" FontSize="20" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="KubeShift Manager" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource TextLightBrush}"/>
+                        <TextBlock Text="MicroShift / OpenShift / K8s GUI" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Connection Inputs -->
+                <WrapPanel Grid.Column="1" VerticalAlignment="Center">
+                    <!-- Profile Selector -->
+                    <StackPanel Orientation="Horizontal" Margin="0,3,10,3">
+                        <TextBlock Text="Node:" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"/>
+                        <ComboBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" DisplayMemberPath="ProfileName" Width="135" Height="30"/>
+                    </StackPanel>
+
+                    <!-- Host & Port -->
+                    <StackPanel Orientation="Horizontal" Margin="0,3,10,3">
+                        <TextBlock Text="Host:" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"/>
+                        <TextBox Text="{Binding Host, UpdateSourceTrigger=PropertyChanged}" Width="120" Height="30"/>
+                        <TextBlock Text=":" VerticalAlignment="Center" Margin="2,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                        <TextBox Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" Width="48" Height="30"/>
+                    </StackPanel>
+
+                    <!-- User & Password -->
+                    <StackPanel Orientation="Horizontal" Margin="0,3,10,3">
+                        <TextBlock Text="User:" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"/>
+                        <TextBox Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}" Width="90" Height="30"/>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,3,10,3">
+                        <TextBlock Text="Pass:" VerticalAlignment="Center" Margin="0,0,5,0" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"/>
+                        <PasswordBox x:Name="PbPassword" Width="100" Height="30" PasswordChanged="OnPasswordChanged"/>
+                    </StackPanel>
+
+                    <CheckBox Content="Sudo" IsChecked="{Binding UseSudo}" VerticalAlignment="Center" Margin="0,3,10,3" Foreground="{DynamicResource TextLightBrush}" FontSize="12"/>
+
+                    <!-- Connect / Disconnect Buttons -->
+                    <Button Content="Connect" Command="{Binding ConnectCommand}" Style="{StaticResource PrimaryBtn}" Height="30" Width="82" Margin="0,3,6,3" 
+                            Visibility="{Binding IsConnected, Converter={StaticResource InvBoolToVis}}"/>
+                    <Button Content="Disconnect" Command="{Binding DisconnectCommand}" Style="{StaticResource DangerBtn}" Height="30" Width="88" Margin="0,3,6,3"
+                            Visibility="{Binding IsConnected, Converter={StaticResource BoolToVis}}"/>
+                    <Button Content="💾 Save" Command="{Binding SaveProfileCommand}" Style="{StaticResource ModernBtn}" Height="30" Width="72" Margin="0,3,6,3"/>
+                </WrapPanel>
+
+                <!-- Right Tools (Theme Toggle, Auto-Refresh, Refresh All) -->
+                <WrapPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <!-- Dynamic Theme Switcher Button -->
+                    <Button Content="{Binding ThemeButtonText}" Command="{Binding ToggleThemeCommand}" Style="{StaticResource ModernBtn}" Height="30" Padding="10,0" Margin="0,3,8,3"/>
+
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,3,8,3">
+                        <TextBlock Text="Auto:" VerticalAlignment="Center" Margin="0,0,4,0" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"/>
+                        <ComboBox SelectedValue="{Binding SelectedRefreshInterval}" SelectedValuePath="Content" Width="85" Height="30">
+                            <ComboBoxItem Content="Manual" IsSelected="True"/>
+                            <ComboBoxItem Content="10s"/>
+                            <ComboBoxItem Content="30s"/>
+                            <ComboBoxItem Content="60s"/>
+                        </ComboBox>
+                    </StackPanel>
+
+                    <Button Content="🔄 Refresh All" Command="{Binding RefreshAllCommand}" Style="{StaticResource ModernBtn}" Height="30" Padding="10,0" Margin="0,3,0,3" IsEnabled="{Binding IsConnected}"/>
+                </WrapPanel>
+            </Grid>
+        </Border>
+
+        <!-- ================= TELEMETRY & STATS RIBBON ================= -->
+        <Border Grid.Row="1" Background="{DynamicResource RibbonBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="14,8"
+                Visibility="{Binding IsConnected, Converter={StaticResource BoolToVis}}">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Node Health stats -->
+                <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+                    <!-- Host & OS -->
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="🖥️ " FontSize="14"/>
+                            <StackPanel>
+                                <TextBlock Text="{Binding NodeStats.Hostname}" FontWeight="SemiBold" FontSize="12" Foreground="{DynamicResource AccentPrimaryBrush}"/>
+                                <TextBlock Text="{Binding NodeStats.OsName}" FontSize="10" Foreground="{DynamicResource TextMutedBrush}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Uptime & CPU -->
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="⏱️ " FontSize="14"/>
+                            <StackPanel>
+                                <TextBlock Text="{Binding NodeStats.Uptime}" FontWeight="SemiBold" FontSize="11" Foreground="{DynamicResource TextLightBrush}"/>
+                                <TextBlock Text="{Binding NodeStats.CpuUsage}" FontSize="10" Foreground="{DynamicResource TextMutedBrush}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Memory & Disk -->
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="📊 " FontSize="14"/>
+                            <StackPanel>
+                                <TextBlock Text="{Binding NodeStats.MemoryDisplay}" FontWeight="SemiBold" FontSize="11" Foreground="{DynamicResource AccentSuccessBrush}"/>
+                                <TextBlock Text="{Binding NodeStats.DiskUsage, StringFormat='Disk: {0}'}" FontSize="10" Foreground="{DynamicResource TextMutedBrush}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Detected CLI & Runtime -->
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="10,6" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="⚙️ " FontSize="14"/>
+                            <StackPanel>
+                                <TextBlock Text="{Binding NodeStats.CliTool, StringFormat='CLI: {0}'}" FontWeight="SemiBold" FontSize="11" Foreground="{DynamicResource AccentWarningBrush}"/>
+                                <TextBlock Text="{Binding NodeStats.ContainerRuntime, StringFormat='Runtime: {0}'}" FontSize="10" Foreground="{DynamicResource TextMutedBrush}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </WrapPanel>
+
+                <!-- Quick Summary Badges -->
+                <WrapPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                        <TextBlock Text="{Binding TotalPodsCount, StringFormat='Pods: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}"/>
+                    </Border>
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                        <TextBlock Text="{Binding RunningPodsCount, StringFormat='Running: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentSuccessBrush}"/>
+                    </Border>
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                        <TextBlock Text="{Binding FailedPodsCount, StringFormat='Issues: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentDangerBrush}"/>
+                    </Border>
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                        <TextBlock Text="{Binding TotalDeploymentsCount, StringFormat='Deployments: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="#8B5CF6"/>
+                    </Border>
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                        <TextBlock Text="{Binding TotalSecretsCount, StringFormat='Secrets: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="#F59E0B"/>
+                    </Border>
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                        <TextBlock Text="{Binding TotalRoutesCount, StringFormat='Routes: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="#06B6D4"/>
+                    </Border>
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,0,2">
+                        <TextBlock Text="{Binding TotalContainersCount, StringFormat='Containers: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentWarningBrush}"/>
+                    </Border>
+                </WrapPanel>
+            </Grid>
+        </Border>
+
+        <!-- ================= MAIN CONTENT TABS ================= -->
+        <TabControl Grid.Row="2" Margin="14,10,14,6">
+
+            <!-- TAB 1: PODS -->
+            <TabItem Header="🚀 Pods">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Pod Filter & Action Bar -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8" VerticalAlignment="Center">
+                        <!-- Namespace selector -->
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
+                            <TextBlock Text="Namespace:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <ComboBox ItemsSource="{Binding Namespaces}" SelectedItem="{Binding SelectedNamespace}" Width="165" Height="30"/>
+                        </StackPanel>
+
+                        <!-- Pod Search box -->
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding PodSearchText, UpdateSourceTrigger=PropertyChanged}" Width="180" Height="30"/>
+                        </StackPanel>
+
+                        <!-- Pod Action Toolbar -->
+                        <Button Content="📜 View Logs" Command="{Binding ViewPodLogsCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="📁 Browse Files" Command="{Binding BrowsePodFilesCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="💾 Attached PVCs" Command="{Binding OpenPodAttachedPvcCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}" ToolTip="Open mounted PVC folder"/>
+                        <Button Content="🔌 Port Forward" Command="{Binding PortForwardCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}" ToolTip="One-click port forwarding to Windows"/>
+                        <Button Content="🔍 Describe" Command="{Binding DescribePodCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="✏️ View &amp; Edit YAML" Command="{Binding ViewPodYamlCommand}" Style="{StaticResource PrimaryBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="💾 Copy YAML" Command="{Binding CopyPodYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Restart" Command="{Binding RestartPodCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🚀 Redeploy" Command="{Binding RedeployPodCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="⏹️ Stop Pod" Command="{Binding StopPodCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}" ToolTip="Stop workload (scales parent deployment to 0 or terminates pod)"/>
+                        <Button Content="⚡ Exec Shell" Command="{Binding ExecPodCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🗑️ Delete Pod" Command="{Binding DeletePodCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPod, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Refresh" Command="{Binding RefreshPodsCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                    </WrapPanel>
+
+                    <!-- Pods DataGrid -->
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding FilteredPods}" SelectedItem="{Binding SelectedPod}" MouseDoubleClick="OnPodDoubleClick">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
+                                <MenuItem Header="📜 View Logs" Command="{Binding ViewPodLogsCommand}"/>
+                                <MenuItem Header="📁 Browse Files in Pod..." Command="{Binding BrowsePodFilesCommand}"/>
+                                <MenuItem Header="💾 Attached PVC Storage..." Command="{Binding OpenPodAttachedPvcCommand}"/>
+                                <MenuItem Header="🔌 Port Forward Tunnel..." Command="{Binding PortForwardCommand}"/>
+                                <MenuItem Header="🔍 Describe Pod" Command="{Binding DescribePodCommand}"/>
+                                <MenuItem Header="✏️ View &amp; Edit YAML..." Command="{Binding ViewPodYamlCommand}"/>
+                                <MenuItem Header="💾 Copy YAML to Windows..." Command="{Binding CopyPodYamlCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🔄 Restart Pod" Command="{Binding RestartPodCommand}"/>
+                                <MenuItem Header="🚀 Redeploy Pod" Command="{Binding RedeployPodCommand}"/>
+                                <MenuItem Header="⏹️ Stop Pod (Scale to 0)..." Command="{Binding StopPodCommand}"/>
+                                <MenuItem Header="⚡ Exec Shell in Pod" Command="{Binding ExecPodCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🗑️ Delete Pod" Command="{Binding DeletePodCommand}"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+
+                        <DataGrid.Columns>
+                            <!-- Name -->
+                            <DataGridTemplateColumn Header="Pod Name" Width="2*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="🚀 " FontSize="12" Margin="0,0,4,0"/>
+                                            <TextBlock Text="{Binding Name}" FontWeight="Medium" Foreground="{DynamicResource TextLightBrush}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <!-- Namespace -->
+                            <DataGridTextColumn Header="Namespace" Binding="{Binding Namespace}" Width="1.2*"/>
+
+                            <!-- Status Badge -->
+                            <DataGridTemplateColumn Header="Status" Width="130">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border CornerRadius="10" Padding="8,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Border.Background>
+                                                <SolidColorBrush Color="{Binding StatusColor}"/>
+                                            </Border.Background>
+                                            <TextBlock Text="{Binding Status}" FontSize="11" FontWeight="SemiBold" Foreground="#11111B"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <!-- Ready -->
+                            <DataGridTextColumn Header="Ready" Binding="{Binding ReadyDisplay}" Width="80"/>
+
+                            <!-- Restarts -->
+                            <DataGridTextColumn Header="Restarts" Binding="{Binding Restarts}" Width="80"/>
+
+                            <!-- Age -->
+                            <DataGridTextColumn Header="Age" Binding="{Binding AgeDisplay}" Width="80"/>
+
+                            <!-- Pod IP -->
+                            <DataGridTextColumn Header="Pod IP" Binding="{Binding PodIP}" Width="120"/>
+
+                            <!-- Node -->
+                            <DataGridTextColumn Header="Node" Binding="{Binding NodeName}" Width="1.2*"/>
+
+                            <!-- Controlled By -->
+                            <DataGridTextColumn Header="Controlled By" Binding="{Binding ControlledBy}" Width="1.5*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 2: DEPLOYMENTS -->
+            <TabItem Header="📦 Deployments">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Deployment Action Bar -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8" VerticalAlignment="Center">
+                        <!-- Search box -->
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding DeploymentSearchText, UpdateSourceTrigger=PropertyChanged}" Width="210" Height="30"/>
+                        </StackPanel>
+
+                        <!-- Actions -->
+                        <Button Content="✏️ Edit &amp; Apply YAML" Command="{Binding EditDeploymentYamlCommand}" Style="{StaticResource PrimaryBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedDeployment, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="⚖️ Scale Replicas" Command="{Binding ScaleDeploymentCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedDeployment, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Rollout Restart" Command="{Binding RestartDeploymentCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedDeployment, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔍 Describe" Command="{Binding DescribeDeploymentCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedDeployment, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="📄 View YAML" Command="{Binding ViewDeploymentYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedDeployment, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="💾 Copy YAML" Command="{Binding CopyDeploymentYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedDeployment, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🗑️ Delete" Command="{Binding DeleteDeploymentCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedDeployment, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Refresh" Command="{Binding RefreshDeploymentsCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                    </WrapPanel>
+
+                    <!-- Deployments DataGrid -->
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding FilteredDeployments}" SelectedItem="{Binding SelectedDeployment}">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
+                                <MenuItem Header="✏️ Edit &amp; Apply YAML..." Command="{Binding EditDeploymentYamlCommand}"/>
+                                <MenuItem Header="📄 View YAML" Command="{Binding ViewDeploymentYamlCommand}"/>
+                                <MenuItem Header="💾 Copy YAML to Windows..." Command="{Binding CopyDeploymentYamlCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="⚖️ Scale Replicas..." Command="{Binding ScaleDeploymentCommand}"/>
+                                <MenuItem Header="🔄 Rollout Restart" Command="{Binding RestartDeploymentCommand}"/>
+                                <MenuItem Header="🔍 Describe Deployment" Command="{Binding DescribeDeploymentCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🗑️ Delete Deployment" Command="{Binding DeleteDeploymentCommand}"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Deployment Name" Width="2*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="📦 " FontSize="12" Margin="0,0,4,0"/>
+                                            <TextBlock Text="{Binding Name}" FontWeight="Medium" Foreground="{DynamicResource TextLightBrush}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Namespace" Binding="{Binding Namespace}" Width="1.2*"/>
+
+                            <!-- Replicas Badge -->
+                            <DataGridTemplateColumn Header="Ready / Desired" Width="120">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border CornerRadius="8" Padding="8,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Border.Background>
+                                                <SolidColorBrush Color="{Binding StatusColor}"/>
+                                            </Border.Background>
+                                            <TextBlock Text="{Binding ReadyDisplay}" FontSize="11" FontWeight="SemiBold" Foreground="#11111B"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Up-to-Date" Binding="{Binding UpToDateReplicas}" Width="90"/>
+                            <DataGridTextColumn Header="Available" Binding="{Binding AvailableReplicas}" Width="90"/>
+                            <DataGridTextColumn Header="Container Images" Binding="{Binding Images}" Width="3*"/>
+                            <DataGridTextColumn Header="Age" Binding="{Binding AgeDisplay}" Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 3: PVC & STORAGE -->
+            <TabItem Header="💾 Persistent Volumes (PVC)">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- PVC Action Bar -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding PvcSearchText, UpdateSourceTrigger=PropertyChanged}" Width="210" Height="30"/>
+                        </StackPanel>
+
+                        <Button Content="📁 Browse PVC Files" Command="{Binding BrowsePvcFilesCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPvc, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔍 Describe PVC" Command="{Binding DescribePvcCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPvc, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="📄 View YAML" Command="{Binding ViewPvcYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPvc, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="💾 Copy YAML" Command="{Binding CopyPvcYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPvc, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🗑️ Delete PVC" Command="{Binding DeletePvcCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedPvc, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Refresh" Command="{Binding RefreshPvcsCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                    </WrapPanel>
+
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding FilteredPvcs}" SelectedItem="{Binding SelectedPvc}" MouseDoubleClick="OnPvcDoubleClick">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
+                                <MenuItem Header="📁 Browse Files in PVC..." Command="{Binding BrowsePvcFilesCommand}"/>
+                                <MenuItem Header="📄 View YAML" Command="{Binding ViewPvcYamlCommand}"/>
+                                <MenuItem Header="💾 Copy YAML to Windows..." Command="{Binding CopyPvcYamlCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🔍 Describe PVC" Command="{Binding DescribePvcCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🗑️ Delete PVC" Command="{Binding DeletePvcCommand}"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Claim Name" Width="2*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="💾 " FontSize="12" Margin="0,0,4,0"/>
+                                            <TextBlock Text="{Binding Name}" FontWeight="Medium" Foreground="{DynamicResource TextLightBrush}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Namespace" Binding="{Binding Namespace}" Width="1.2*"/>
+
+                            <DataGridTemplateColumn Header="Status" Width="100">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border CornerRadius="8" Padding="6,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Border.Background>
+                                                <SolidColorBrush Color="{Binding StatusColor}"/>
+                                            </Border.Background>
+                                            <TextBlock Text="{Binding Status}" FontSize="11" FontWeight="SemiBold" Foreground="#11111B"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Volume" Binding="{Binding VolumeName}" Width="1.5*"/>
+                            <DataGridTextColumn Header="Capacity" Binding="{Binding Capacity}" Width="100"/>
+                            <DataGridTextColumn Header="Access Modes" Binding="{Binding AccessModes}" Width="120"/>
+                            <DataGridTextColumn Header="Storage Class" Binding="{Binding StorageClass}" Width="1.2*"/>
+                            <DataGridTextColumn Header="Age" Binding="{Binding AgeDisplay}" Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 4: SECRETS & CERTIFICATES -->
+            <TabItem Header="🔑 Secrets">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Secret Action Bar -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding SecretSearchText, UpdateSourceTrigger=PropertyChanged}" Width="210" Height="30"/>
+                        </StackPanel>
+
+                        <Button Content="👁️ Inspect Secret &amp; Certs" Command="{Binding ViewSecretDataCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔍 Describe Secret" Command="{Binding DescribeSecretCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="📄 View YAML" Command="{Binding ViewSecretYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="✏️ Edit &amp; Apply YAML" Command="{Binding EditSecretYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="💾 Copy YAML" Command="{Binding CopySecretYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🗑️ Delete Secret" Command="{Binding DeleteSecretCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Refresh" Command="{Binding RefreshSecretsCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                    </WrapPanel>
+
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding FilteredSecrets}" SelectedItem="{Binding SelectedSecret}" MouseDoubleClick="OnSecretDoubleClick">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
+                                <MenuItem Header="👁️ Inspect Secret &amp; Certificates..." Command="{Binding ViewSecretDataCommand}"/>
+                                <MenuItem Header="🔍 Describe Secret" Command="{Binding DescribeSecretCommand}"/>
+                                <MenuItem Header="📄 View YAML" Command="{Binding ViewSecretYamlCommand}"/>
+                                <MenuItem Header="✏️ Edit &amp; Apply YAML..." Command="{Binding EditSecretYamlCommand}"/>
+                                <MenuItem Header="💾 Copy YAML to Windows..." Command="{Binding CopySecretYamlCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🗑️ Delete Secret" Command="{Binding DeleteSecretCommand}"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="Secret Name" Width="2*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding DisplayIcon}" FontSize="12" Margin="0,0,5,0"/>
+                                            <TextBlock Text="{Binding Name}" FontWeight="Medium" Foreground="{DynamicResource TextLightBrush}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Namespace" Binding="{Binding Namespace}" Width="1.2*"/>
+                            <DataGridTextColumn Header="Type" Binding="{Binding Type}" Width="1.5*"/>
+                            <DataGridTextColumn Header="Data Keys" Binding="{Binding DataCount}" Width="80"/>
+                            <DataGridTextColumn Header="Certificates / Keys / Files" Binding="{Binding KeysDisplay}" Width="2.5*"/>
+                            <DataGridTextColumn Header="Age" Binding="{Binding AgeDisplay}" Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB: INGRESS & OPENSHIFT ROUTES -->
+            <TabItem Header="🌐 Ingress &amp; Routes">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- OS Router Status Header Card -->
+                    <Border Grid.Row="0" Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Grid.Column="0">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="🌐 Cluster Router &amp; Ingress Controller: " FontWeight="Bold" FontSize="13" Foreground="{DynamicResource AccentPrimaryBrush}"/>
+                                    <TextBlock Text="{Binding RouterStatus.SummaryText}" FontWeight="Bold" FontSize="13" Foreground="{DynamicResource TextLightBrush}"/>
+                                </StackPanel>
+                                <WrapPanel Orientation="Horizontal">
+                                    <TextBlock Text="Router Pods: " FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                                    <TextBlock Text="{Binding RouterStatus.RouterPodsStatus}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextLightBrush}" Margin="0,0,16,0"/>
+
+                                    <TextBlock Text="Port 80 (HTTP): " FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                                    <TextBlock Text="{Binding RouterStatus.HttpListeningDisplay}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextLightBrush}" Margin="0,0,16,0"/>
+
+                                    <TextBlock Text="Port 443 (HTTPS): " FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                                    <TextBlock Text="{Binding RouterStatus.HttpsListeningDisplay}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextLightBrush}" Margin="0,0,16,0"/>
+
+                                    <TextBlock Text="Firewall: " FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+                                    <TextBlock Text="{Binding RouterStatus.FirewallStatus}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource TextLightBrush}" Margin="0,0,16,0"/>
+                                </WrapPanel>
+                                <TextBlock Text="{Binding RouterStatus.NodeDnsAdvice, StringFormat='💡 Tip: {0}'}" FontSize="11" Foreground="{DynamicResource TextMutedBrush}" Margin="0,4,0,0"/>
+                            </StackPanel>
+
+                            <Button Grid.Column="1" Content="🔄 Check Router Health" Command="{Binding RefreshRouterStatusCommand}" Style="{StaticResource ModernBtn}" Height="30" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Ingress / Route Action Toolbar -->
+                    <WrapPanel Grid.Row="1" Margin="0,0,0,8" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                            <TextBlock Text="🔍 Filter:" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding IngressRouteSearchText, UpdateSourceTrigger=PropertyChanged}" Width="200" Height="30"/>
+                        </StackPanel>
+
+                        <Button Content="🌐 Open in Browser" Command="{Binding OpenRouteInBrowserCommand}" Style="{StaticResource PrimaryBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedIngressRoute, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="✏️ Edit YAML" Command="{Binding EditIngressRouteYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedIngressRoute, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔍 Describe" Command="{Binding DescribeIngressRouteCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedIngressRoute, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🗑️ Delete" Command="{Binding DeleteIngressRouteCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedIngressRoute, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Refresh" Command="{Binding RefreshIngressRoutesCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                    </WrapPanel>
+
+                    <!-- Routes / Ingress DataGrid -->
+                    <DataGrid Grid.Row="2" ItemsSource="{Binding FilteredIngressRoutes}" SelectedItem="{Binding SelectedIngressRoute}">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
+                                <MenuItem Header="🌐 Open in Browser" Command="{Binding OpenRouteInBrowserCommand}"/>
+                                <MenuItem Header="✏️ Edit YAML &amp; Apply..." Command="{Binding EditIngressRouteYamlCommand}"/>
+                                <MenuItem Header="🔍 Describe..." Command="{Binding DescribeIngressRouteCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🗑️ Delete" Command="{Binding DeleteIngressRouteCommand}"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+
+                        <DataGrid.Columns>
+                            <!-- Kind -->
+                            <DataGridTemplateColumn Header="Kind" Width="85">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding DisplayIcon}" Margin="0,0,6,0"/>
+                                            <TextBlock Text="{Binding Kind}" FontWeight="SemiBold"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <!-- Name -->
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="1.5*" FontWeight="SemiBold"/>
+                            <DataGridTextColumn Header="Namespace" Binding="{Binding Namespace}" Width="1.2*"/>
+                            
+                            <!-- Host & Full URL -->
+                            <DataGridTemplateColumn Header="Exposed Host URL" Width="2.5*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding FullUrl}" Foreground="{DynamicResource AccentPrimaryBrush}" TextDecorations="Underline" Cursor="Hand" VerticalAlignment="Center"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="70"/>
+                            <DataGridTextColumn Header="Target Service" Binding="{Binding ServiceName}" Width="1.4*"/>
+                            <DataGridTextColumn Header="Target Port" Binding="{Binding TargetPort}" Width="90"/>
+
+                            <!-- TLS -->
+                            <DataGridTemplateColumn Header="TLS Termination" Width="120">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{Binding TlsBadgeColor}" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                            <TextBlock Text="{Binding TlsTermination}" Foreground="White" FontSize="11" FontWeight="SemiBold"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="90"/>
+                            <DataGridTextColumn Header="Age" Binding="{Binding AgeDisplay}" Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 5: CONTAINERS (PODMAN / DOCKER / CRICTL) -->
+            <TabItem Header="🐳 Containers">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Container Action Bar -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding ContainerSearchText, UpdateSourceTrigger=PropertyChanged}" Width="210" Height="30"/>
+                        </StackPanel>
+
+                        <Button Content="📜 Logs" Command="{Binding ViewContainerLogsCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedContainer, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="▶️ Start" Command="{Binding StartContainerCommand}" Style="{StaticResource SuccessBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedContainer, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="⏹️ Stop" Command="{Binding StopContainerCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedContainer, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Restart" Command="{Binding RestartContainerCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedContainer, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🗑️ Remove" Command="{Binding RemoveContainerCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedContainer, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Refresh" Command="{Binding RefreshContainersCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                    </WrapPanel>
+
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding FilteredContainers}" SelectedItem="{Binding SelectedContainer}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="ID" Binding="{Binding ShortId}" Width="110"/>
+                            <DataGridTextColumn Header="Container Name" Binding="{Binding Name}" Width="1.8*"/>
+                            <DataGridTextColumn Header="Image" Binding="{Binding Image}" Width="2*"/>
+
+                            <DataGridTemplateColumn Header="State" Width="100">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border CornerRadius="8" Padding="6,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Border.Background>
+                                                <SolidColorBrush Color="{Binding StateColor}"/>
+                                            </Border.Background>
+                                            <TextBlock Text="{Binding State}" FontSize="11" FontWeight="SemiBold" Foreground="#11111B"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="1.5*"/>
+                            <DataGridTextColumn Header="Ports" Binding="{Binding Ports}" Width="1.2*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 5: DOCKER / PODMAN IMAGES -->
+            <TabItem Header="🖼️ Docker Images">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Image Action Bar -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,14,2">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding ImageSearchText, UpdateSourceTrigger=PropertyChanged}" Width="210" Height="30"/>
+                        </StackPanel>
+
+                        <Button Content="⬇️ Pull Image" Command="{Binding PullImageCommand}" Style="{StaticResource SuccessBtn}" Height="30" Margin="0,2,6,2"/>
+                        <Button Content="🗑️ Delete Image" Command="{Binding DeleteImageCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedImage, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔄 Refresh" Command="{Binding RefreshImagesCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                    </WrapPanel>
+
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding FilteredImages}" SelectedItem="{Binding SelectedImage}">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Repository" Binding="{Binding Repository}" Width="2*"/>
+                            <DataGridTextColumn Header="Tag" Binding="{Binding Tag}" Width="120"/>
+                            <DataGridTextColumn Header="Image ID" Binding="{Binding ShortId}" Width="120"/>
+                            <DataGridTextColumn Header="Created" Binding="{Binding Created}" Width="1.5*"/>
+                            <DataGridTextColumn Header="Virtual Size" Binding="{Binding Size}" Width="100"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 6: NODE FILES EXPLORER -->
+            <TabItem Header="📁 Node Files">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Path Nav & Action Row -->
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Button Content="⬆️ Up" Command="{Binding GoUpDirectoryCommand}" Style="{StaticResource ModernBtn}" Margin="0,0,8,0" Width="65" Height="30"/>
+                            <TextBox Grid.Column="1" Text="{Binding CurrentRemotePath, UpdateSourceTrigger=PropertyChanged}" Height="30" VerticalContentAlignment="Center"/>
+                        </Grid>
+
+                        <WrapPanel Grid.Row="1" VerticalAlignment="Center">
+                            <Button Content="👁️ Open / Read" Command="{Binding OpenRemoteItemCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2"/>
+                            <Button Content="💾 Copy to Windows" Command="{Binding DownloadRemoteFileCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2"/>
+                            <Button Content="📤 Upload to Node" Command="{Binding UploadRemoteFileCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2"/>
+                            <Button Content="🔄 Go / Refresh" Command="{Binding RefreshFilesCommand}" Style="{StaticResource PrimaryBtn}" Width="110" Height="30" Margin="0,2,0,2"/>
+                        </WrapPanel>
+                    </Grid>
+
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding RemoteFiles}" SelectedItem="{Binding SelectedRemoteFile}" MouseDoubleClick="OnFileDoubleClick">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
+                                <MenuItem Header="👁️ Open / Read File" Command="{Binding OpenRemoteItemCommand}"/>
+                                <MenuItem Header="💾 Copy to Windows..." Command="{Binding DownloadRemoteFileCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="📤 Upload File Here..." Command="{Binding UploadRemoteFileCommand}"/>
+                                <MenuItem Header="🔄 Refresh Folder" Command="{Binding RefreshFilesCommand}"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Type" Binding="{Binding DisplayIcon}" Width="50"/>
+                            <DataGridTextColumn Header="File / Folder Name" Binding="{Binding Name}" Width="2.5*"/>
+                            <DataGridTextColumn Header="Size" Binding="{Binding DisplaySize}" Width="100"/>
+                            <DataGridTextColumn Header="Permissions" Binding="{Binding Permissions}" Width="110"/>
+                            <DataGridTextColumn Header="Last Modified" Binding="{Binding LastModified, StringFormat='yyyy-MM-dd HH:mm:ss'}" Width="160"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 7: SETTINGS & PROFILES -->
+            <TabItem Header="⚙️ Settings &amp; Profiles">
+                <ScrollViewer Margin="0,12,0,0" VerticalScrollBarVisibility="Auto">
+                    <Grid MaxWidth="850" HorizontalAlignment="Left">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="220"/>
+                            <ColumnDefinition Width="400"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Header text -->
+                        <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="Node SSH &amp; Kubernetes Configuration" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}" Margin="0,0,0,16"/>
+
+                        <!-- Profile Name -->
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Profile Name:" VerticalAlignment="Center" Margin="0,6" Foreground="{DynamicResource TextLightBrush}"/>
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ProfileName, UpdateSourceTrigger=PropertyChanged}" Height="32" Margin="0,6"/>
+
+                        <!-- Sudo Password -->
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Sudo Password (optional):" VerticalAlignment="Center" Margin="0,6" Foreground="{DynamicResource TextLightBrush}"/>
+                        <PasswordBox x:Name="PbSudoPassword" Grid.Row="2" Grid.Column="1" Height="32" Margin="0,6" PasswordChanged="OnSudoPasswordChanged"/>
+
+                        <!-- SSH Key -->
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Private Key Path (optional):" VerticalAlignment="Center" Margin="0,6" Foreground="{DynamicResource TextLightBrush}"/>
+                        <Grid Grid.Row="3" Grid.Column="1" Margin="0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding SshKeyPath, UpdateSourceTrigger=PropertyChanged}" Height="32"/>
+                            <Button Content="Browse..." Grid.Column="1" Width="80" Height="32" Margin="6,0,0,0" Style="{StaticResource ModernBtn}" Click="OnBrowseKeyClick"/>
+                        </Grid>
+
+                        <!-- Custom Kubeconfig -->
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Custom KUBECONFIG Path:" VerticalAlignment="Center" Margin="0,6" Foreground="{DynamicResource TextLightBrush}"/>
+                        <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding CustomKubeconfig, UpdateSourceTrigger=PropertyChanged}" Height="32" Margin="0,6"/>
+
+                        <!-- Preferred CLI -->
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="Kubernetes CLI Preference:" VerticalAlignment="Center" Margin="0,6" Foreground="{DynamicResource TextLightBrush}"/>
+                        <ComboBox Grid.Row="5" Grid.Column="1" SelectedValue="{Binding PreferredCli}" SelectedValuePath="Content" Height="32" Margin="0,6">
+                            <ComboBoxItem Content="Auto"/>
+                            <ComboBoxItem Content="oc"/>
+                            <ComboBoxItem Content="kubectl"/>
+                        </ComboBox>
+
+                        <!-- Preferred Container Runtime -->
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Container Runtime Preference:" VerticalAlignment="Center" Margin="0,6" Foreground="{DynamicResource TextLightBrush}"/>
+                        <ComboBox Grid.Row="6" Grid.Column="1" SelectedValue="{Binding PreferredContainerRuntime}" SelectedValuePath="Content" Height="32" Margin="0,6">
+                            <ComboBoxItem Content="Auto"/>
+                            <ComboBoxItem Content="podman"/>
+                            <ComboBoxItem Content="crictl"/>
+                            <ComboBoxItem Content="docker"/>
+                        </ComboBox>
+
+                        <!-- Sudo Admin Privileges Checkbox -->
+                        <TextBlock Grid.Row="7" Grid.Column="0" Text="Backend Privileges:" VerticalAlignment="Center" Margin="0,6" Foreground="{DynamicResource TextLightBrush}"/>
+                        <CheckBox Grid.Row="7" Grid.Column="1" IsChecked="{Binding UseSudo}" Content="Always execute all commands behind the scene with sudo / admin" Foreground="{DynamicResource TextLightBrush}" VerticalAlignment="Center" Margin="0,6"/>
+
+                        <!-- Profile buttons -->
+                        <WrapPanel Grid.Row="8" Grid.Column="1" Margin="0,16,0,0" VerticalAlignment="Center">
+                            <Button Content="💾 Save Profile" Command="{Binding SaveProfileCommand}" Style="{StaticResource PrimaryBtn}" Height="32" Width="110" Margin="0,2,10,2"/>
+                            <Button Content="➕ Add New" Command="{Binding NewProfileCommand}" Style="{StaticResource ModernBtn}" Height="32" Width="95" Margin="0,2,10,2"/>
+                            <Button Content="🗑️ Delete" Command="{Binding DeleteProfileCommand}" Style="{StaticResource DangerBtn}" Height="32" Width="85" Margin="0,2,0,2"/>
+                        </WrapPanel>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <!-- ================= BEHIND-THE-SCENES DRAWER ================= -->
+        <Border Grid.Row="3" Background="{DynamicResource RibbonBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Drawer Toggle Bar -->
+                <Grid Grid.Row="0" Margin="12,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Button Content="🔍 Behind-the-Scenes SSH Activity &amp; Terminal" 
+                            Command="{Binding ToggleCommandLogCommand}" Style="{StaticResource ModernBtn}" Height="28" Padding="10,2" FontSize="11.5"/>
+
+                    <!-- Custom Command quick-run bar -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center"
+                                Visibility="{Binding IsConnected, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Exec on Node:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}" FontSize="11.5"/>
+                        <TextBox Text="{Binding CustomCommandText, UpdateSourceTrigger=PropertyChanged}" Width="380" Height="28" FontSize="11.5" KeyDown="OnCustomCommandKeyDown"/>
+                        <Button Content="Run" Command="{Binding RunCustomCommand}" Style="{StaticResource ModernBtn}" Height="28" Width="60" Margin="6,0,0,0" FontSize="11.5"/>
+                    </StackPanel>
+
+                    <Button Grid.Column="2" Content="Clear Logs" Command="{Binding ClearCommandLogCommand}" Style="{StaticResource ModernBtn}" Height="26" Padding="8,1" FontSize="11"/>
+                </Grid>
+
+                <!-- Expanded Log View -->
+                <Grid Grid.Row="1" Height="190" Visibility="{Binding IsCommandLogVisible, Converter={StaticResource BoolToVis}}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*"/>
+                        <ColumnDefinition Width="2*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <DataGrid Grid.Column="0" ItemsSource="{Binding CommandLogs}" x:Name="DgCommandLogs" SelectionChanged="OnLogSelectionChanged">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Time" Binding="{Binding TimeString}" Width="95"/>
+                            <DataGridTemplateColumn Header="Status" Width="85">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border CornerRadius="6" Padding="6,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Border.Background>
+                                                <SolidColorBrush Color="{Binding StatusColor}"/>
+                                            </Border.Background>
+                                            <TextBlock Text="{Binding StatusDisplay}" FontSize="10" FontWeight="SemiBold" Foreground="#11111B"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Duration" Binding="{Binding DurationMs, StringFormat='{}{0} ms'}" Width="80"/>
+                            <DataGridTextColumn Header="SSH Command Executed" Binding="{Binding Command}" Width="3*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <!-- Preview of output -->
+                    <Border Grid.Column="1" Background="{DynamicResource TerminalBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0" Padding="8">
+                        <TextBox x:Name="TxtLogPreview" Background="Transparent" Foreground="{DynamicResource TerminalFgBrush}" 
+                                 FontFamily="Cascadia Code, Consolas" FontSize="11" IsReadOnly="True" 
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" BorderThickness="0"
+                                 Text="Select a command from the list to view its raw output and diagnostics."/>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- ================= BOTTOM STATUS BAR ================= -->
+        <Border Grid.Row="4" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="12,5">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse Width="9" Height="9" Margin="0,0,6,0">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="{Binding ConnectionStatusColor}"/>
+                        </Ellipse.Fill>
+                    </Ellipse>
+                    <TextBlock Text="{Binding ConnectionStatusText}" FontSize="11.5" Foreground="{DynamicResource TextLightBrush}"/>
+                </StackPanel>
+
+                <TextBlock Grid.Column="2" Text=".NET 10 | MicroShift &amp; OpenShift Kubernetes UI" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"/>
+            </Grid>
+        </Border>
+
+        <!-- ================= BUSY / LOADING OVERLAY ================= -->
+        <Border Grid.RowSpan="5" Background="#80000000" Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" 
+                HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+            <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource AccentPrimaryBrush}" BorderThickness="1.5" CornerRadius="8" 
+                    Padding="26,20" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel HorizontalAlignment="Center">
+                    <ProgressBar IsIndeterminate="True" Width="220" Height="6" Margin="0,0,0,12" Foreground="{DynamicResource AccentPrimaryBrush}" Background="{DynamicResource BorderBrush}"/>
+                    <TextBlock Text="{Binding BusyText}" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextLightBrush}" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
+        </Border>
+    </Grid>
+</Window>

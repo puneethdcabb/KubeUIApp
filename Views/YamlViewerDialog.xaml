@@ -1,0 +1,54 @@
+<Window x:Class="KubeUIApp.Views.YamlViewerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Resource Viewer" Height="680" Width="880"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource TextLightBrush}"
+        FontFamily="Segoe UI">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Top Header & Search -->
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="TxtTitle" Grid.Column="0" Text="Resource Details" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{DynamicResource AccentPrimaryBrush}"/>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="10,0">
+                <TextBlock Text="Find:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                <TextBox x:Name="TxtSearch" Width="180" Height="30" TextChanged="OnSearchTextChanged" KeyDown="OnSearchKeyDown" ToolTip="Type to search, press Enter for next match"/>
+            </StackPanel>
+
+            <Button Content="💾 Copy YAML to Windows..." Grid.Column="2" Height="30" Padding="12,0" Margin="0,0,8,0"
+                    Style="{StaticResource PrimaryBtn}" Click="OnSaveClick"/>
+            <Button Content="📋 Copy to Clipboard" Grid.Column="3" Height="30" Padding="12,0"
+                    Style="{StaticResource ModernBtn}" Click="OnCopyClick"/>
+        </Grid>
+
+        <!-- Editor/Viewer Area -->
+        <Border Grid.Row="1" Background="{DynamicResource TerminalBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4">
+            <TextBox x:Name="TxtContent" 
+                     Background="Transparent" Foreground="{DynamicResource TerminalFgBrush}" 
+                     FontFamily="Cascadia Code, Consolas, Courier New" FontSize="12.5"
+                     IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                     IsInactiveSelectionHighlightEnabled="True" SelectionBrush="{DynamicResource AccentPrimaryBrush}" SelectionOpacity="0.45"
+                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                     BorderThickness="0" Padding="12"/>
+        </Border>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Close" IsCancel="True" Width="85" Height="30"
+                    Style="{StaticResource ModernBtn}" Click="OnCloseClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

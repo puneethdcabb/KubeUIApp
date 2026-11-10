@@ -1,0 +1,75 @@
+<Window x:Class="KubeUIApp.Views.YamlEditorDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="YAML Editor &amp; Apply" Height="750" Width="980"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource SurfaceBrush}" Foreground="{DynamicResource TextLightBrush}"
+        FontFamily="Segoe UI">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <!-- Top Controls & Search -->
+            <RowDefinition Height="Auto"/>
+            <!-- Editor area -->
+            <RowDefinition Height="*"/>
+            <!-- Bottom Actions -->
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Top Header & Search -->
+        <Border Grid.Row="0" Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
+                        <TextBlock Text="✏️ Edit YAML: " FontWeight="Bold" FontSize="15" Foreground="{DynamicResource AccentPrimaryBrush}"/>
+                        <TextBlock x:Name="TxtResourceTitle" Text="Deployment/my-app" FontWeight="Bold" FontSize="15" Foreground="{DynamicResource TextLightBrush}"/>
+                        <TextBlock x:Name="TxtNamespace" Text=" (default)" FontSize="13" Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                    </StackPanel>
+                    <TextBlock Text="Modify image, environment variables, replicas, or resources below and apply live to cluster." FontSize="11.5" Foreground="{DynamicResource TextMutedBrush}"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0">
+                    <TextBlock Text="Find:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                    <TextBox x:Name="TxtSearch" Width="160" Height="30" TextChanged="OnSearchTextChanged" KeyDown="OnSearchKeyDown" ToolTip="Type to search, press Enter for next match"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="💾 Save to Windows..." Height="30" Padding="10,0" Margin="0,0,6,0" Style="{StaticResource ModernBtn}" Click="OnSaveClick"/>
+                    <Button Content="📋 Copy" Height="30" Padding="10,0" Style="{StaticResource ModernBtn}" Click="OnCopyClick"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Code Editor Area -->
+        <Border Grid.Row="1" Background="{DynamicResource TerminalBgBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="4">
+            <TextBox x:Name="TxtEditor"
+                     Background="Transparent" Foreground="{DynamicResource TerminalFgBrush}"
+                     FontFamily="Cascadia Code, Consolas, Courier New" FontSize="12.5"
+                     IsReadOnly="False" AcceptsReturn="True" AcceptsTab="True" TextWrapping="NoWrap"
+                     IsInactiveSelectionHighlightEnabled="True" SelectionBrush="{DynamicResource AccentPrimaryBrush}" SelectionOpacity="0.45"
+                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                     BorderThickness="0" Padding="12" TextChanged="OnEditorTextChanged"/>
+        </Border>
+
+        <!-- Footer & Apply Actions -->
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="TxtStatus" Text="Ready to edit" VerticalAlignment="Center" Foreground="{DynamicResource TextMutedBrush}" FontSize="12"/>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="BtnApplyAndRedeploy" Content="🚀 Apply &amp; Redeploy" Height="34" Padding="14,0" Margin="0,0,8,0" Style="{StaticResource PrimaryBtn}" Click="OnApplyAndRedeployClick"/>
+                <Button x:Name="BtnApplyOnly" Content="💾 Apply Only" Height="34" Padding="14,0" Margin="0,0,8,0" Style="{StaticResource ModernBtn}" Click="OnApplyOnlyClick"/>
+                <Button Content="Cancel" IsCancel="True" Width="80" Height="34" Style="{StaticResource ModernBtn}" Click="OnCancelClick"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
