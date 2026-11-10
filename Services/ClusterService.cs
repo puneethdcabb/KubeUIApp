@@ -552,7 +552,7 @@ namespace KubeUIApp.Services
         {
             string cntFlag = !string.IsNullOrEmpty(containerName) ? $"-c '{containerName}'" : "";
             string escapedPath = path.Replace("'", "'\\''");
-            var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{podName}' -n '{ns}' {cntFlag} -- sh -c \"ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'\""));
+            var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{podName}' -n '{ns}' {cntFlag} -- sh -c \"ls -la -N --time-style=iso '{escapedPath}' 2>/dev/null || ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'\""));
             if (res.IsSuccess)
             {
                 return ParseLsOutput(res.Output, path);
@@ -564,7 +564,7 @@ namespace KubeUIApp.Services
             {
                 string hostDir = $"{rootFs.TrimEnd('/')}/{path.TrimStart('/')}";
                 string escapedHostDir = hostDir.Replace("'", "'\\''");
-                var hostRes = await _ssh.RunCommandAsync($"ls -la --time-style=iso '{escapedHostDir}' 2>/dev/null || ls -la '{escapedHostDir}'");
+                var hostRes = await _ssh.RunCommandAsync($"ls -la -N --time-style=iso '{escapedHostDir}' 2>/dev/null || ls -la --time-style=iso '{escapedHostDir}' 2>/dev/null || ls -la '{escapedHostDir}'");
                 if (hostRes.IsSuccess)
                 {
                     return ParseLsOutput(hostRes.Output, path);
@@ -1026,7 +1026,7 @@ namespace KubeUIApp.Services
             {
                 targetPath = string.IsNullOrWhiteSpace(subPath) ? mountInfo.MountPath : subPath;
                 string escapedTarget = targetPath.Replace("'", "'\\''");
-                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"ls -la --time-style=iso '{escapedTarget}' 2>/dev/null || ls -la '{escapedTarget}'\""));
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"ls -la -N --time-style=iso '{escapedTarget}' 2>/dev/null || ls -la --time-style=iso '{escapedTarget}' 2>/dev/null || ls -la '{escapedTarget}'\""));
                 if (res.IsSuccess)
                 {
                     list = ParseLsOutput(res.Output, targetPath);
@@ -1053,32 +1053,61 @@ namespace KubeUIApp.Services
             return (list, targetPath, mountInfo);
         }
 
+        private static string UnquoteLsName(string name)
+        {
+            if (name.Length >= 2)
+            {
+                if ((name[0] == '\'' && name[^1] == '\'') || (name[0] == '"' && name[^1] == '"'))
+                {
+                    return name.Substring(1, name.Length - 2);
+                }
+            }
+            return name;
+        }
+
+        private static string CleanRemotePath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            var segments = path.Split('/');
+            for (int i = 0; i < segments.Length; i++)
+            {
+                segments[i] = UnquoteLsName(segments[i]);
+            }
+            return string.Join("/", segments);
+        }
+
         private async Task<string> ResolvePvcHostFilePathAsync(PvcMountInfo mountInfo, string containerOrHostPath, bool mustExist = true)
         {
+            containerOrHostPath = CleanRemotePath(containerOrHostPath);
             if (string.IsNullOrEmpty(mountInfo.HostStoragePath))
                 return containerOrHostPath;
 
             string hostBase = mountInfo.HostStoragePath.TrimEnd('/');
-            if (containerOrHostPath.StartsWith(hostBase, StringComparison.Ordinal))
-                return containerOrHostPath;
-
-            string rel = containerOrHostPath.StartsWith(mountInfo.MountPath, StringComparison.Ordinal)
-                ? containerOrHostPath.Substring(mountInfo.MountPath.Length).TrimStart('/')
-                : containerOrHostPath.TrimStart('/');
-
             var candidates = new List<string>();
-            if (!string.IsNullOrEmpty(mountInfo.SubPath))
+
+            if (containerOrHostPath.StartsWith(hostBase, StringComparison.Ordinal))
             {
-                string sp = mountInfo.SubPath.Trim('/');
-                candidates.Add(string.IsNullOrEmpty(rel) ? $"{hostBase}/{sp}" : $"{hostBase}/{sp}/{rel}");
+                candidates.Add(containerOrHostPath);
             }
-
-            candidates.Add(string.IsNullOrEmpty(rel) ? hostBase : $"{hostBase}/{rel}");
-
-            string mountFolderName = mountInfo.MountPath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
-            if (!string.IsNullOrEmpty(mountFolderName) && !rel.StartsWith(mountFolderName + "/", StringComparison.OrdinalIgnoreCase))
+            else
             {
-                candidates.Add(string.IsNullOrEmpty(rel) ? $"{hostBase}/{mountFolderName}" : $"{hostBase}/{mountFolderName}/{rel}");
+                string rel = containerOrHostPath.StartsWith(mountInfo.MountPath, StringComparison.Ordinal)
+                    ? containerOrHostPath.Substring(mountInfo.MountPath.Length).TrimStart('/')
+                    : containerOrHostPath.TrimStart('/');
+
+                if (!string.IsNullOrEmpty(mountInfo.SubPath))
+                {
+                    string sp = mountInfo.SubPath.Trim('/');
+                    candidates.Add(string.IsNullOrEmpty(rel) ? $"{hostBase}/{sp}" : $"{hostBase}/{sp}/{rel}");
+                }
+
+                candidates.Add(string.IsNullOrEmpty(rel) ? hostBase : $"{hostBase}/{rel}");
+
+                string mountFolderName = mountInfo.MountPath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
+                if (!string.IsNullOrEmpty(mountFolderName) && !rel.StartsWith(mountFolderName + "/", StringComparison.OrdinalIgnoreCase))
+                {
+                    candidates.Add(string.IsNullOrEmpty(rel) ? $"{hostBase}/{mountFolderName}" : $"{hostBase}/{mountFolderName}/{rel}");
+                }
             }
 
             if (!mustExist)
@@ -1095,11 +1124,12 @@ namespace KubeUIApp.Services
             }
 
             // Fallback: locate the file by name inside the PVC host mount folder
-            string fileName = System.IO.Path.GetFileName(containerOrHostPath).Replace("'", "'\\''");
-            if (!string.IsNullOrEmpty(fileName))
+            string rawFileName = UnquoteLsName(System.IO.Path.GetFileName(containerOrHostPath));
+            string escapedFileName = rawFileName.Replace("[", "\\[").Replace("]", "\\]").Replace("*", "\\*").Replace("?", "\\?").Replace("'", "'\\''");
+            if (!string.IsNullOrEmpty(escapedFileName))
             {
                 string escapedBase = hostBase.Replace("'", "'\\''");
-                var findRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -name '{fileName}' 2>/dev/null | head -n 1");
+                var findRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -name '{escapedFileName}' 2>/dev/null | head -n 1");
                 if (findRes.IsSuccess && !string.IsNullOrWhiteSpace(findRes.Output))
                 {
                     return findRes.Output.Trim().Split('\n')[0].Trim();
@@ -1240,6 +1270,7 @@ namespace KubeUIApp.Services
                 string name = line.Substring(tokenRanges[nameStartIdx].Start);
                 int arrowIdx = name.IndexOf(" -> ", StringComparison.Ordinal);
                 if (arrowIdx > 0) name = name.Substring(0, arrowIdx);
+                name = UnquoteLsName(name);
 
                 if (name == "." || name == "..") continue;
                 bool isDir = perms.StartsWith("d") || perms.StartsWith("l");

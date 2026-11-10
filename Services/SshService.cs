@@ -328,7 +328,7 @@ namespace KubeUIApp.Services
 
             // Fallback to command line `ls -la` executed with full sudo/root privileges (GNU & BusyBox compatible)
             string escapedPath = path.Replace("'", "'\\''");
-            var cmdRes = await RunCommandAsync($"ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'");
+            var cmdRes = await RunCommandAsync($"ls -la -N --time-style=iso '{escapedPath}' 2>/dev/null || ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'");
             if (cmdRes.IsSuccess)
             {
                 var lines = cmdRes.Output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -364,6 +364,10 @@ namespace KubeUIApp.Services
                     string name = line.Substring(tokenRanges[nameStartIdx].Start);
                     int arrowIdx = name.IndexOf(" -> ", StringComparison.Ordinal);
                     if (arrowIdx > 0) name = name.Substring(0, arrowIdx);
+                    if (name.Length >= 2 && ((name[0] == '\'' && name[^1] == '\'') || (name[0] == '"' && name[^1] == '"')))
+                    {
+                        name = name.Substring(1, name.Length - 2);
+                    }
 
                     if (name == "." || name == "..") continue;
                     bool isDir = perms.StartsWith("d") || perms.StartsWith("l");
@@ -399,9 +403,25 @@ namespace KubeUIApp.Services
             return list;
         }
 
+        private static string SanitizeRemotePath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            var segments = path.Split('/');
+            for (int i = 0; i < segments.Length; i++)
+            {
+                string s = segments[i];
+                if (s.Length >= 2 && ((s[0] == '\'' && s[^1] == '\'') || (s[0] == '"' && s[^1] == '"')))
+                {
+                    segments[i] = s.Substring(1, s.Length - 2);
+                }
+            }
+            return string.Join("/", segments);
+        }
+
         public async Task<string> ReadTextFileAsync(string path, int maxBytes = 2 * 1024 * 1024)
         {
-            if (_sftpClient != null && _sftpClient.IsConnected)
+            path = SanitizeRemotePath(path);
+            if (_sftpClient != null && _sftpClient.IsConnected && !path.StartsWith("/var/lib/kubelet/", StringComparison.Ordinal))
             {
                 await _lock.WaitAsync();
                 try
@@ -433,12 +453,13 @@ namespace KubeUIApp.Services
 
             // Always fallback to command execution with admin privileges
             string escapedPath = path.Replace("'", "'\\''");
-            var cmdRes = await RunCommandAsync($"head -c {maxBytes} '{escapedPath}'");
+            var cmdRes = await RunCommandAsync($"head -c {maxBytes} -- '{escapedPath}' 2>/dev/null || head -c {maxBytes} '{escapedPath}'");
             return cmdRes.Output;
         }
 
         public async Task DownloadFileAsync(string remotePath, string localPath)
         {
+            remotePath = SanitizeRemotePath(remotePath);
             if (_sftpClient != null && _sftpClient.IsConnected && !remotePath.StartsWith("/var/lib/kubelet/", StringComparison.Ordinal))
             {
                 await _lock.WaitAsync();
@@ -478,7 +499,8 @@ namespace KubeUIApp.Services
 
         public async Task UploadFileAsync(string localPath, string remotePath)
         {
-            if (_sftpClient != null && _sftpClient.IsConnected)
+            remotePath = SanitizeRemotePath(remotePath);
+            if (_sftpClient != null && _sftpClient.IsConnected && !remotePath.StartsWith("/var/lib/kubelet/", StringComparison.Ordinal))
             {
                 await _lock.WaitAsync();
                 try
