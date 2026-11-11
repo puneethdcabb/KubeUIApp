@@ -1026,7 +1026,7 @@ namespace KubeUIApp.Services
             {
                 targetPath = string.IsNullOrWhiteSpace(subPath) ? mountInfo.MountPath : subPath;
                 string escapedTarget = targetPath.Replace("'", "'\\''");
-                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"ls -la -N --time-style=iso '{escapedTarget}' 2>/dev/null || ls -la --time-style=iso '{escapedTarget}' 2>/dev/null || ls -la '{escapedTarget}'\""));
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"ls -la -N --time-style=long-iso '{escapedTarget}' 2>/dev/null || ls -la --time-style=long-iso '{escapedTarget}' 2>/dev/null || ls -la -N --time-style=iso '{escapedTarget}' 2>/dev/null || ls -la --time-style=iso '{escapedTarget}' 2>/dev/null || ls -la '{escapedTarget}'\""));
                 if (res.IsSuccess)
                 {
                     list = ParseLsOutput(res.Output, targetPath);
@@ -1055,13 +1055,20 @@ namespace KubeUIApp.Services
 
         private static string UnquoteLsName(string name)
         {
-            if (name.Length >= 2)
+            if (string.IsNullOrEmpty(name)) return name;
+
+            // Strip trailing quote if present
+            if (name.EndsWith('\'') || name.EndsWith('"'))
             {
-                if ((name[0] == '\'' && name[^1] == '\'') || (name[0] == '"' && name[^1] == '"'))
-                {
-                    return name.Substring(1, name.Length - 2);
-                }
+                name = name.Substring(0, name.Length - 1);
             }
+
+            // Strip leading quote if present
+            if (name.StartsWith('\'') || name.StartsWith('"'))
+            {
+                name = name.Substring(1);
+            }
+
             return name;
         }
 
@@ -1088,6 +1095,32 @@ namespace KubeUIApp.Services
             if (containerOrHostPath.StartsWith(hostBase, StringComparison.Ordinal))
             {
                 candidates.Add(containerOrHostPath);
+
+                // If containerOrHostPath already starts with hostBase, also check if it contains mountFolderName or subPath
+                // e.g. hostBase/mountFolder/relative vs hostBase/relative
+                string subRel = containerOrHostPath.Substring(hostBase.Length).TrimStart('/');
+                if (!string.IsNullOrEmpty(mountInfo.SubPath))
+                {
+                    string sp = mountInfo.SubPath.Trim('/');
+                    if (!subRel.StartsWith(sp + "/", StringComparison.OrdinalIgnoreCase) && subRel != sp)
+                    {
+                        candidates.Add($"{hostBase}/{sp}/{subRel}");
+                    }
+                }
+
+                string mountFolderName = mountInfo.MountPath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
+                if (!string.IsNullOrEmpty(mountFolderName))
+                {
+                    if (!subRel.StartsWith(mountFolderName + "/", StringComparison.OrdinalIgnoreCase) && subRel != mountFolderName)
+                    {
+                        candidates.Add($"{hostBase}/{mountFolderName}/{subRel}");
+                    }
+                    else if (subRel.StartsWith(mountFolderName + "/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string strippedRel = subRel.Substring(mountFolderName.Length).TrimStart('/');
+                        candidates.Add($"{hostBase}/{strippedRel}");
+                    }
+                }
             }
             else
             {
@@ -1104,9 +1137,17 @@ namespace KubeUIApp.Services
                 candidates.Add(string.IsNullOrEmpty(rel) ? hostBase : $"{hostBase}/{rel}");
 
                 string mountFolderName = mountInfo.MountPath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
-                if (!string.IsNullOrEmpty(mountFolderName) && !rel.StartsWith(mountFolderName + "/", StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrEmpty(mountFolderName))
                 {
-                    candidates.Add(string.IsNullOrEmpty(rel) ? $"{hostBase}/{mountFolderName}" : $"{hostBase}/{mountFolderName}/{rel}");
+                    if (!rel.StartsWith(mountFolderName + "/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidates.Add(string.IsNullOrEmpty(rel) ? $"{hostBase}/{mountFolderName}" : $"{hostBase}/{mountFolderName}/{rel}");
+                    }
+                    else
+                    {
+                        string strippedRel = rel.Substring(mountFolderName.Length).TrimStart('/');
+                        candidates.Add(string.IsNullOrEmpty(strippedRel) ? hostBase : $"{hostBase}/{strippedRel}");
+                    }
                 }
             }
 
@@ -1123,16 +1164,120 @@ namespace KubeUIApp.Services
                 }
             }
 
-            // Fallback: locate the file by name inside the PVC host mount folder
+            // Fallback: locate the file inside the PVC host mount folder
             string rawFileName = UnquoteLsName(System.IO.Path.GetFileName(containerOrHostPath));
-            string escapedFileName = rawFileName.Replace("[", "\\[").Replace("]", "\\]").Replace("*", "\\*").Replace("?", "\\?").Replace("'", "'\\''");
-            if (!string.IsNullOrEmpty(escapedFileName))
+            if (!string.IsNullOrEmpty(rawFileName))
             {
                 string escapedBase = hostBase.Replace("'", "'\\''");
-                var findRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -name '{escapedFileName}' 2>/dev/null | head -n 1");
-                if (findRes.IsSuccess && !string.IsNullOrWhiteSpace(findRes.Output))
+                string b64Target = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(rawFileName));
+
+                // 1. Direct Python exact-match script using valid multi-line structure
+                string pyScript =
+                    "import os, sys, base64\n" +
+                    $"target = base64.b64decode('{b64Target}').decode('utf-8')\n" +
+                    $"root = '{escapedBase}'\n" +
+                    "found = ''\n" +
+                    "for r, d, files in os.walk(root):\n" +
+                    "    for f in files:\n" +
+                    "        if f == target or f.lower() == target.lower():\n" +
+                    "            found = os.path.join(r, f)\n" +
+                    "            break\n" +
+                    "    if found:\n" +
+                    "        break\n" +
+                    "if found:\n" +
+                    "    print(found)\n";
+                string b64PyScript = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(pyScript));
+                string pythonSearch = $"python3 -c \"$(printf '%s' '{b64PyScript}' | base64 -d)\" 2>/dev/null";
+
+                var pyRes = await _ssh.RunCommandAsync(pythonSearch);
+                if (pyRes.IsSuccess && !string.IsNullOrWhiteSpace(pyRes.Output))
                 {
-                    return findRes.Output.Trim().Split('\n')[0].Trim();
+                    string foundPath = pyRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim() ?? "";
+                    if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith(hostBase, StringComparison.Ordinal))
+                        return foundPath;
+                }
+
+                // 2. Exact filename matching loop in bash with base64 payload
+                string bashSearch =
+                    $"target=$(printf '%s' '{b64Target}' | base64 -d); " +
+                    $"find '{escapedBase}' -type f 2>/dev/null | while IFS= read -r f; do " +
+                    $"bn=\"${{f##*/}}\"; " +
+                    $"if [ \"$bn\" = \"$target\" ]; then echo \"$f\"; break; fi; " +
+                    $"done";
+
+                var bashRes = await _ssh.RunCommandAsync(bashSearch);
+                if (bashRes.IsSuccess && !string.IsNullOrWhiteSpace(bashRes.Output))
+                {
+                    string foundPath = bashRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                    if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith(hostBase, StringComparison.Ordinal))
+                        return foundPath;
+                }
+
+                // 3. Case-insensitive filename matching in bash loop
+                string bashInameSearch =
+                    $"target=$(printf '%s' '{b64Target}' | base64 -d | tr '[:upper:]' '[:lower:]'); " +
+                    $"find '{escapedBase}' -type f 2>/dev/null | while IFS= read -r f; do " +
+                    $"bn=\"${{f##*/}}\"; " +
+                    $"bn_lower=$(printf '%s' \"$bn\" | tr '[:upper:]' '[:lower:]'); " +
+                    $"if [ \"$bn_lower\" = \"$target\" ]; then echo \"$f\"; break; fi; " +
+                    $"done";
+
+                var bashInameRes = await _ssh.RunCommandAsync(bashInameSearch);
+                if (bashInameRes.IsSuccess && !string.IsNullOrWhiteSpace(bashInameRes.Output))
+                {
+                    string foundPath = bashInameRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                    if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith(hostBase, StringComparison.Ordinal))
+                        return foundPath;
+                }
+
+                // 4. Fallback search across any sibling pod directories or csi mounts if kubelet pod path changed or was restarted
+                if (hostBase.StartsWith("/var/lib/kubelet/pods/", StringComparison.Ordinal))
+                {
+                    string broadBashSearch =
+                        $"target=$(printf '%s' '{b64Target}' | base64 -d); " +
+                        $"find /var/lib/kubelet/pods/*/volumes/* -type f 2>/dev/null | while IFS= read -r f; do " +
+                        $"bn=\"${{f##*/}}\"; " +
+                        $"if [ \"$bn\" = \"$target\" ]; then echo \"$f\"; break; fi; " +
+                        $"done";
+
+                    var broadRes = await _ssh.RunCommandAsync(broadBashSearch);
+                    if (broadRes.IsSuccess && !string.IsNullOrWhiteSpace(broadRes.Output))
+                    {
+                        string foundPath = broadRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                        if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith("/var/lib/kubelet/pods/", StringComparison.Ordinal))
+                            return foundPath;
+                    }
+                }
+
+                // 5. Fallback partial / thumbprint search in case ls timestamp parsing previously stripped a leading token
+                string? bracketToken = null;
+                int openBracket = rawFileName.IndexOf('[');
+                int closeBracket = rawFileName.IndexOf(']');
+                if (openBracket >= 0 && closeBracket > openBracket + 4)
+                {
+                    bracketToken = rawFileName.Substring(openBracket + 1, closeBracket - openBracket - 1);
+                }
+
+                string partialKey = !string.IsNullOrEmpty(bracketToken) ? bracketToken : rawFileName;
+                string b64Partial = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(partialKey));
+                string searchRoot = hostBase.StartsWith("/var/lib/kubelet/pods/", StringComparison.Ordinal)
+                    ? "/var/lib/kubelet/pods"
+                    : escapedBase;
+
+                string partialSearch =
+                    $"key=$(printf '%s' '{b64Partial}' | base64 -d | tr '[:upper:]' '[:lower:]'); " +
+                    $"find '{searchRoot}' -type f 2>/dev/null | while IFS= read -r f; do " +
+                    $"bn=\"${{f##*/}}\"; " +
+                    $"bn_lower=$(printf '%s' \"$bn\" | tr '[:upper:]' '[:lower:]'); " +
+                    $"case \"$bn_lower\" in *\"$key\"*) echo \"$f\"; break ;; esac; " +
+                    $"done";
+
+                var partialRes = await _ssh.RunCommandAsync(partialSearch);
+                if (partialRes.IsSuccess && !string.IsNullOrWhiteSpace(partialRes.Output))
+                {
+                    string foundPath = partialRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                    if (!string.IsNullOrEmpty(foundPath))
+                        return foundPath;
                 }
             }
 
@@ -1145,27 +1290,155 @@ namespace KubeUIApp.Services
             bool isHostFile = !string.IsNullOrEmpty(mountInfo.HostStoragePath) &&
                               filePath.StartsWith(mountInfo.HostStoragePath, StringComparison.Ordinal);
 
+            byte[]? fileBytes = null;
+            string? readError = null;
+
             if (mountInfo.IsMounted && !isHostFile)
             {
                 string escapedFile = filePath.Replace("'", "'\\''");
-                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- head -c 2097152 '{escapedFile}'"));
-                if (res.IsSuccess)
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"head -c 2097152 '{escapedFile}' | base64\""), timeoutSeconds: 60);
+                if (res.IsSuccess && !string.IsNullOrWhiteSpace(res.Output))
                 {
-                    return res.Output;
+                    try
+                    {
+                        fileBytes = Convert.FromBase64String(res.Output.Trim());
+                    }
+                    catch
+                    {
+                        // Fall back to direct text
+                        return res.Output;
+                    }
                 }
-                if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+                else
                 {
-                    string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, filePath, mustExist: true);
-                    return await _ssh.ReadTextFileAsync(hostFile);
+                    readError = res.Error;
                 }
-                return res.Error;
             }
-            else if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+
+            if (fileBytes == null && !string.IsNullOrEmpty(mountInfo.HostStoragePath))
             {
                 string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, filePath, mustExist: true);
-                return await _ssh.ReadTextFileAsync(hostFile);
+                string escapedHostFile = hostFile.Replace("'", "'\\''");
+
+                // Stage with cp to a clean /tmp filename first so brackets/spaces never interfere with reading
+                string hostStage = $"/tmp/pvc_view_{Guid.NewGuid():N}.tmp";
+                var stageRes = await _ssh.RunCommandAsync($"cp -f -- '{escapedHostFile}' '{hostStage}' 2>/dev/null || cp -f '{escapedHostFile}' '{hostStage}' 2>/dev/null");
+                string targetToRead = stageRes.IsSuccess ? hostStage : escapedHostFile;
+
+                try
+                {
+                    var hostB64Res = await _ssh.RunCommandAsync($"sh -c \"head -c 2097152 '{targetToRead}' 2>/dev/null | base64\"", timeoutSeconds: 60);
+                    if (hostB64Res.IsSuccess && !string.IsNullOrWhiteSpace(hostB64Res.Output))
+                    {
+                        try
+                        {
+                            fileBytes = Convert.FromBase64String(hostB64Res.Output.Trim());
+                        }
+                        catch
+                        {
+                        }
+                    }
+
+                    if (fileBytes == null && stageRes.IsSuccess)
+                    {
+                        string rawText = await _ssh.ReadTextFileAsync(hostStage);
+                        if (!string.IsNullOrEmpty(rawText) && !rawText.StartsWith("Error reading file:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return rawText;
+                        }
+                    }
+                }
+                finally
+                {
+                    if (stageRes.IsSuccess)
+                    {
+                        await _ssh.RunCommandAsync($"rm -f '{hostStage}'");
+                    }
+                }
             }
-            return "Error: PVC is unmounted and local path could not be resolved.";
+
+            if (fileBytes != null && fileBytes.Length > 0)
+            {
+                return FormatFileContentForViewer(filePath, fileBytes);
+            }
+
+            return !string.IsNullOrEmpty(readError) ? readError : "Error: PVC file could not be read or file is empty.";
+        }
+
+        private static string FormatFileContentForViewer(string filePath, byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0)
+            {
+                return "[Empty File (0 bytes)]";
+            }
+
+            string ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
+            if (ext == ".der" || ext == ".cer")
+            {
+                try
+                {
+                    using var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(bytes);
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine("=== X.509 Certificate (.der) ===");
+                    sb.AppendLine($"Subject:      {cert.Subject}");
+                    sb.AppendLine($"Issuer:       {cert.Issuer}");
+                    sb.AppendLine($"Not Before:   {cert.NotBefore:yyyy-MM-dd HH:mm:ss UTC}");
+                    sb.AppendLine($"Not After:    {cert.NotAfter:yyyy-MM-dd HH:mm:ss UTC}");
+                    sb.AppendLine($"Thumbprint:   {cert.Thumbprint}");
+                    sb.AppendLine($"Serial Num:   {cert.SerialNumber}");
+                    sb.AppendLine();
+                    sb.AppendLine("=== PEM Encoded Format ===");
+                    sb.AppendLine("-----BEGIN CERTIFICATE-----");
+                    sb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
+                    sb.AppendLine("-----END CERTIFICATE-----");
+                    return sb.ToString();
+                }
+                catch
+                {
+                    // Fall back to PEM or Base64 representation
+                }
+            }
+            else if (ext == ".crl")
+            {
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("=== Certificate Revocation List (.crl) ===");
+                sb.AppendLine($"Raw Size: {bytes.Length} bytes");
+                sb.AppendLine();
+                sb.AppendLine("=== PEM Encoded Format ===");
+                sb.AppendLine("-----BEGIN X509 CRL-----");
+                sb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
+                sb.AppendLine("-----END X509 CRL-----");
+                return sb.ToString();
+            }
+
+            // Check if content is binary or text
+            bool isBinary = false;
+            int checkLen = Math.Min(bytes.Length, 1024);
+            for (int i = 0; i < checkLen; i++)
+            {
+                if (bytes[i] == 0)
+                {
+                    isBinary = true;
+                    break;
+                }
+            }
+
+            if (!isBinary)
+            {
+                string text = System.Text.Encoding.UTF8.GetString(bytes);
+                if (!string.IsNullOrEmpty(text))
+                {
+                    return text;
+                }
+            }
+
+            // Binary fallback: display Base64 with header
+            var binSb = new System.Text.StringBuilder();
+            binSb.AppendLine($"=== Binary File ({bytes.Length} bytes) ===");
+            binSb.AppendLine("Use 'Copy to Windows File...' in the toolbar to save this exact binary file to Windows.");
+            binSb.AppendLine();
+            binSb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
+            return binSb.ToString();
         }
 
         public async Task CopyPvcFileToWindowsAsync(string pvcName, string ns, string remoteFilePath, string localWindowsPath)
@@ -1177,16 +1450,51 @@ namespace KubeUIApp.Services
             if (mountInfo.IsMounted && !isHostFile)
             {
                 string escapedFile = remoteFilePath.Replace("'", "'\\''");
-                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- base64 '{escapedFile}'"), timeoutSeconds: 120);
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"base64 '{escapedFile}'\""), timeoutSeconds: 120);
                 if (res.IsSuccess && !string.IsNullOrWhiteSpace(res.Output))
                 {
                     byte[] bytes = Convert.FromBase64String(res.Output.Trim());
                     await System.IO.File.WriteAllBytesAsync(localWindowsPath, bytes);
                     return;
                 }
+
+                // If pod base64 failed, try staging via pod to node or oc cp if available
+                string stagingTmp = $"/tmp/pvc_copy_{Guid.NewGuid():N}.tmp";
+                var cpPodRes = await _ssh.RunCommandAsync(BuildKubeCmd($"cp '{ns}/{mountInfo.PodName}':\"{escapedFile}\" '{stagingTmp}' -c '{mountInfo.ContainerName}'"), timeoutSeconds: 120);
+                if (cpPodRes.IsSuccess)
+                {
+                    try
+                    {
+                        await _ssh.DownloadFileAsync(stagingTmp, localWindowsPath);
+                        return;
+                    }
+                    finally
+                    {
+                        await _ssh.RunCommandAsync($"rm -f '{stagingTmp}'");
+                    }
+                }
+
                 if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
                 {
                     string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                    string escapedHost = hostFile.Replace("'", "'\\''");
+
+                    // Staging with cp on host to eliminate any bracket or quoting issues
+                    string hostStage = $"/tmp/pvc_host_{Guid.NewGuid():N}.tmp";
+                    var stageRes = await _ssh.RunCommandAsync($"cp -f -- '{escapedHost}' '{hostStage}' 2>/dev/null || cp -f '{escapedHost}' '{hostStage}'");
+                    if (stageRes.IsSuccess)
+                    {
+                        try
+                        {
+                            await _ssh.DownloadFileAsync(hostStage, localWindowsPath);
+                            return;
+                        }
+                        finally
+                        {
+                            await _ssh.RunCommandAsync($"rm -f '{hostStage}'");
+                        }
+                    }
+
                     await _ssh.DownloadFileAsync(hostFile, localWindowsPath);
                     return;
                 }
@@ -1195,6 +1503,24 @@ namespace KubeUIApp.Services
             else if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
             {
                 string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                string escapedHost = hostFile.Replace("'", "'\\''");
+
+                // Staging with cp on host to eliminate bracket / space / long path issues
+                string hostStage = $"/tmp/pvc_host_{Guid.NewGuid():N}.tmp";
+                var stageRes = await _ssh.RunCommandAsync($"cp -f -- '{escapedHost}' '{hostStage}' 2>/dev/null || cp -f '{escapedHost}' '{hostStage}'");
+                if (stageRes.IsSuccess)
+                {
+                    try
+                    {
+                        await _ssh.DownloadFileAsync(hostStage, localWindowsPath);
+                        return;
+                    }
+                    finally
+                    {
+                        await _ssh.RunCommandAsync($"rm -f '{hostStage}'");
+                    }
+                }
+
                 await _ssh.DownloadFileAsync(hostFile, localWindowsPath);
                 return;
             }
@@ -1233,6 +1559,37 @@ namespace KubeUIApp.Services
             throw new Exception("PVC is not currently mounted and host path could not be resolved.");
         }
 
+        public async Task<bool> DeletePvcFileAsync(string pvcName, string ns, string remoteFilePath)
+        {
+            var mountInfo = await FindPvcMountAsync(pvcName, ns);
+            bool isHostFile = !string.IsNullOrEmpty(mountInfo.HostStoragePath) &&
+                              remoteFilePath.StartsWith(mountInfo.HostStoragePath, StringComparison.Ordinal);
+
+            if (mountInfo.IsMounted && !isHostFile)
+            {
+                string escapedFile = remoteFilePath.Replace("'", "'\\''");
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- rm -f -- '{escapedFile}'"));
+                if (res.IsSuccess)
+                {
+                    return true;
+                }
+                if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+                {
+                    string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                    await _ssh.DeleteFileAsync(hostFile);
+                    return true;
+                }
+                throw new Exception($"Failed to delete file from pod: {res.Error}");
+            }
+            else if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+            {
+                string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                await _ssh.DeleteFileAsync(hostFile);
+                return true;
+            }
+            throw new Exception("PVC is not currently mounted by any running pod and not accessible on host.");
+        }
+
         private static List<RemoteFileInfo> ParseLsOutput(string output, string basePath)
         {
             var list = new List<RemoteFileInfo>();
@@ -1262,8 +1619,10 @@ namespace KubeUIApp.Services
 
                 string perms = GetToken(0);
                 string token5 = GetToken(5);
+                string token6 = GetToken(6);
                 bool isIsoDate = token5.Length == 10 && token5[4] == '-' && token5[7] == '-';
-                int nameStartIdx = isIsoDate ? 7 : (tokenRanges.Count >= 9 ? 8 : 7);
+                bool isShortIsoDate = !isIsoDate && token5.Length == 5 && token5[2] == '-' && token6.Length >= 5 && token6[2] == ':';
+                int nameStartIdx = (isIsoDate || isShortIsoDate) ? 7 : (tokenRanges.Count >= 9 ? 8 : 7);
                 if (tokenRanges.Count <= nameStartIdx)
                     continue;
 
@@ -1278,11 +1637,15 @@ namespace KubeUIApp.Services
                 DateTime dt = default;
                 if (isIsoDate)
                 {
-                    DateTime.TryParse(token5 + " " + GetToken(6), out dt);
+                    DateTime.TryParse(token5 + " " + token6, out dt);
+                }
+                else if (isShortIsoDate)
+                {
+                    DateTime.TryParse($"{DateTime.Now.Year}-{token5} {token6}", out dt);
                 }
                 else if (nameStartIdx == 8)
                 {
-                    DateTime.TryParse($"{token5} {GetToken(6)} {GetToken(7)}", out dt);
+                    DateTime.TryParse($"{token5} {token6} {GetToken(7)}", out dt);
                 }
 
                 list.Add(new RemoteFileInfo

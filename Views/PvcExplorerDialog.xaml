@@ -76,6 +76,7 @@
                 <Button Content="💾 Copy to Windows PC..." Width="165" Height="32" Margin="0,2,8,2" Style="{StaticResource PrimaryBtn}" Click="OnCopyToWindowsClick"/>
                 <Button Content="👁️ View File" Width="95" Height="32" Margin="0,2,8,2" Style="{StaticResource ModernBtn}" Click="OnViewFileClick"/>
                 <Button Content="📤 Copy File to PVC" Width="140" Height="32" Margin="0,2,8,2" Style="{StaticResource ModernBtn}" Click="OnUploadToPvcClick"/>
+                <Button Content="🗑️ Delete File" Width="105" Height="32" Margin="0,2,8,2" Style="{StaticResource DangerBtn}" Click="OnDeleteFileClick"/>
                 <Button Content="📋 Copy Path" Width="95" Height="32" Margin="0,2,0,2" Style="{StaticResource ModernBtn}" Click="OnCopyPathClick"/>
             </WrapPanel>
 

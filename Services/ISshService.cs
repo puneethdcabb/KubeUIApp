@@ -29,6 +29,7 @@ namespace KubeUIApp.Services
         Task<string> ReadTextFileAsync(string path, int maxBytes = 2 * 1024 * 1024);
         Task DownloadFileAsync(string remotePath, string localPath);
         Task UploadFileAsync(string localPath, string remotePath);
+        Task DeleteFileAsync(string remotePath);
         IDisposable StartPortForward(string remoteHost, uint remotePort, uint localPort);
     }
 }

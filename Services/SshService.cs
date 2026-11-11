@@ -328,7 +328,7 @@ namespace KubeUIApp.Services
 
             // Fallback to command line `ls -la` executed with full sudo/root privileges (GNU & BusyBox compatible)
             string escapedPath = path.Replace("'", "'\\''");
-            var cmdRes = await RunCommandAsync($"ls -la -N --time-style=iso '{escapedPath}' 2>/dev/null || ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'");
+            var cmdRes = await RunCommandAsync($"ls -la -N --time-style=long-iso '{escapedPath}' 2>/dev/null || ls -la --time-style=long-iso '{escapedPath}' 2>/dev/null || ls -la -N --time-style=iso '{escapedPath}' 2>/dev/null || ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'");
             if (cmdRes.IsSuccess)
             {
                 var lines = cmdRes.Output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -356,17 +356,23 @@ namespace KubeUIApp.Services
 
                     string perms = GetToken(0);
                     string token5 = GetToken(5);
+                    string token6 = GetToken(6);
                     bool isIsoDate = token5.Length == 10 && token5[4] == '-' && token5[7] == '-';
-                    int nameStartIdx = isIsoDate ? 7 : (tokenRanges.Count >= 9 ? 8 : 7);
+                    bool isShortIsoDate = !isIsoDate && token5.Length == 5 && token5[2] == '-' && token6.Length >= 5 && token6[2] == ':';
+                    int nameStartIdx = (isIsoDate || isShortIsoDate) ? 7 : (tokenRanges.Count >= 9 ? 8 : 7);
                     if (tokenRanges.Count <= nameStartIdx)
                         continue;
 
                     string name = line.Substring(tokenRanges[nameStartIdx].Start);
                     int arrowIdx = name.IndexOf(" -> ", StringComparison.Ordinal);
                     if (arrowIdx > 0) name = name.Substring(0, arrowIdx);
-                    if (name.Length >= 2 && ((name[0] == '\'' && name[^1] == '\'') || (name[0] == '"' && name[^1] == '"')))
+                    if (name.EndsWith('\'') || name.EndsWith('"'))
                     {
-                        name = name.Substring(1, name.Length - 2);
+                        name = name.Substring(0, name.Length - 1);
+                    }
+                    if (name.StartsWith('\'') || name.StartsWith('"'))
+                    {
+                        name = name.Substring(1);
                     }
 
                     if (name == "." || name == "..") continue;
@@ -375,11 +381,15 @@ namespace KubeUIApp.Services
                     DateTime dt = default;
                     if (isIsoDate)
                     {
-                        DateTime.TryParse(token5 + " " + GetToken(6), out dt);
+                        DateTime.TryParse(token5 + " " + token6, out dt);
+                    }
+                    else if (isShortIsoDate)
+                    {
+                        DateTime.TryParse($"{DateTime.Now.Year}-{token5} {token6}", out dt);
                     }
                     else if (nameStartIdx == 8)
                     {
-                        DateTime.TryParse($"{token5} {GetToken(6)} {GetToken(7)}", out dt);
+                        DateTime.TryParse($"{token5} {token6} {GetToken(7)}", out dt);
                     }
 
                     list.Add(new RemoteFileInfo
@@ -530,6 +540,35 @@ namespace KubeUIApp.Services
             if (!cmdRes.IsSuccess)
             {
                 throw new Exception($"Upload failed: {cmdRes.Error}");
+            }
+        }
+
+        public async Task DeleteFileAsync(string remotePath)
+        {
+            remotePath = SanitizeRemotePath(remotePath);
+            if (_sftpClient != null && _sftpClient.IsConnected && !remotePath.StartsWith("/var/lib/kubelet/", StringComparison.Ordinal))
+            {
+                await _lock.WaitAsync();
+                try
+                {
+                    await Task.Run(() => _sftpClient.DeleteFile(remotePath));
+                    return;
+                }
+                catch
+                {
+                    // Fallback to rm with admin permissions
+                }
+                finally
+                {
+                    _lock.Release();
+                }
+            }
+
+            string escapedPath = remotePath.Replace("'", "'\\''");
+            var cmdRes = await RunCommandAsync($"rm -f -- '{escapedPath}'");
+            if (!cmdRes.IsSuccess)
+            {
+                throw new Exception($"Delete failed: {cmdRes.Error}");
             }
         }
 
