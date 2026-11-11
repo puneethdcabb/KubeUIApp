@@ -364,9 +364,13 @@ namespace KubeUIApp.Services
                     string name = line.Substring(tokenRanges[nameStartIdx].Start);
                     int arrowIdx = name.IndexOf(" -> ", StringComparison.Ordinal);
                     if (arrowIdx > 0) name = name.Substring(0, arrowIdx);
-                    if (name.Length >= 2 && ((name[0] == '\'' && name[^1] == '\'') || (name[0] == '"' && name[^1] == '"')))
+                    if (name.EndsWith('\'') || name.EndsWith('"'))
                     {
-                        name = name.Substring(1, name.Length - 2);
+                        name = name.Substring(0, name.Length - 1);
+                    }
+                    if (name.StartsWith('\'') || name.StartsWith('"'))
+                    {
+                        name = name.Substring(1);
                     }
 
                     if (name == "." || name == "..") continue;

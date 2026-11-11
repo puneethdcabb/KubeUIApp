@@ -1055,13 +1055,20 @@ namespace KubeUIApp.Services
 
         private static string UnquoteLsName(string name)
         {
-            if (name.Length >= 2)
+            if (string.IsNullOrEmpty(name)) return name;
+
+            // Strip trailing quote if present
+            if (name.EndsWith('\'') || name.EndsWith('"'))
             {
-                if ((name[0] == '\'' && name[^1] == '\'') || (name[0] == '"' && name[^1] == '"'))
-                {
-                    return name.Substring(1, name.Length - 2);
-                }
+                name = name.Substring(0, name.Length - 1);
             }
+
+            // Strip leading quote if present
+            if (name.StartsWith('\'') || name.StartsWith('"'))
+            {
+                name = name.Substring(1);
+            }
+
             return name;
         }
 
@@ -1123,51 +1130,66 @@ namespace KubeUIApp.Services
                 }
             }
 
-            // Fallback: locate the file by exact filename or case-insensitive search inside the PVC host mount folder
+            // Fallback: locate the file inside the PVC host mount folder
             string rawFileName = UnquoteLsName(System.IO.Path.GetFileName(containerOrHostPath));
             if (!string.IsNullOrEmpty(rawFileName))
             {
                 string escapedBase = hostBase.Replace("'", "'\\''");
-                string escapedFileName = rawFileName.Replace("'", "'\\''");
 
-                // Try find by exact literal name matching
-                var findExactRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -name '{escapedFileName}' 2>/dev/null | head -n 1");
-                if (findExactRes.IsSuccess && !string.IsNullOrWhiteSpace(findExactRes.Output))
+                // Python or bash script to search for the file using exact string comparison rather than glob patterns
+                // This avoids globbing interpretation of '[', ']', spaces, or length issues with pattern matching.
+                string b64Target = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(rawFileName));
+                string pythonSearch =
+                    $"python3 -c \"import os, sys, base64; " +
+                    $"target = base64.b64decode('{b64Target}').decode('utf-8'); " +
+                    $"root = '{escapedBase}'; " +
+                    $"found = ''; " +
+                    $"for r, d, files in os.walk(root): " +
+                    $"    for f in files: " +
+                    $"        if f == target or f.lower() == target.lower(): " +
+                    $"            found = os.path.join(r, f); break; " +
+                    $"    if found: break; " +
+                    $"print(found if found else '')\" 2>/dev/null";
+
+                var pyRes = await _ssh.RunCommandAsync(pythonSearch);
+                if (pyRes.IsSuccess && !string.IsNullOrWhiteSpace(pyRes.Output))
                 {
-                    string foundPath = findExactRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-                    if (!string.IsNullOrEmpty(foundPath))
+                    string foundPath = pyRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim() ?? "";
+                    if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith(hostBase, StringComparison.Ordinal))
                         return foundPath;
                 }
 
-                // Try find case-insensitive matching
-                var findInameRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -iname '{escapedFileName}' 2>/dev/null | head -n 1");
-                if (findInameRes.IsSuccess && !string.IsNullOrWhiteSpace(findInameRes.Output))
+                // If python3 is not present, use bash exact filename matching loop with print0 or IFS read
+                string bashSearch =
+                    $"target=$(printf '%s' '{b64Target}' | base64 -d); " +
+                    $"find '{escapedBase}' -type f 2>/dev/null | while IFS= read -r f; do " +
+                    $"bn=\"${{f##*/}}\"; " +
+                    $"if [ \"$bn\" = \"$target\" ]; then echo \"$f\"; break; fi; " +
+                    $"done";
+
+                var bashRes = await _ssh.RunCommandAsync(bashSearch);
+                if (bashRes.IsSuccess && !string.IsNullOrWhiteSpace(bashRes.Output))
                 {
-                    string foundPath = findInameRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-                    if (!string.IsNullOrEmpty(foundPath))
+                    string foundPath = bashRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                    if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith(hostBase, StringComparison.Ordinal))
                         return foundPath;
                 }
 
-                // If path contained directory segments, try to locate by relative suffix or subfolders
-                string relSuffix = containerOrHostPath.StartsWith(hostBase, StringComparison.Ordinal)
-                    ? containerOrHostPath.Substring(hostBase.Length).TrimStart('/')
-                    : containerOrHostPath.TrimStart('/');
-                var segs = relSuffix.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (segs.Length >= 2)
+                // Try find case-insensitive matching in bash loop
+                string bashInameSearch =
+                    $"target=$(printf '%s' '{b64Target}' | base64 -d | tr '[:upper:]' '[:lower:]'); " +
+                    $"find '{escapedBase}' -type f 2>/dev/null | while IFS= read -r f; do " +
+                    $"bn=\"${{f##*/}}\"; " +
+                    $"bn_lower=$(printf '%s' \"$bn\" | tr '[:upper:]' '[:lower:]'); " +
+                    $"if [ \"$bn_lower\" = \"$target\" ]; then echo \"$f\"; break; fi; " +
+                    $"done";
+
+                var bashInameRes = await _ssh.RunCommandAsync(bashInameSearch);
+                if (bashInameRes.IsSuccess && !string.IsNullOrWhiteSpace(bashInameRes.Output))
                 {
-                    string parentFolder = segs[^2].Replace("'", "'\\''");
-                    var findParentRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -type d -iname '{parentFolder}' 2>/dev/null | head -n 1");
-                    if (findParentRes.IsSuccess && !string.IsNullOrWhiteSpace(findParentRes.Output))
-                    {
-                        string matchedParent = findParentRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
-                        string candInMatched = $"{matchedParent}/{rawFileName}";
-                        string escCand = candInMatched.Replace("'", "'\\''");
-                        var checkMatched = await _ssh.RunCommandAsync($"if [ -e '{escCand}' ]; then echo 'OK'; fi");
-                        if (checkMatched.IsSuccess && checkMatched.Output.Contains("OK"))
-                        {
-                            return candInMatched;
-                        }
-                    }
+                    string foundPath = bashInameRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                    if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith(hostBase, StringComparison.Ordinal))
+                        return foundPath;
                 }
             }
 
