@@ -533,6 +533,35 @@ namespace KubeUIApp.Services
             }
         }
 
+        public async Task DeleteFileAsync(string remotePath)
+        {
+            remotePath = SanitizeRemotePath(remotePath);
+            if (_sftpClient != null && _sftpClient.IsConnected && !remotePath.StartsWith("/var/lib/kubelet/", StringComparison.Ordinal))
+            {
+                await _lock.WaitAsync();
+                try
+                {
+                    await Task.Run(() => _sftpClient.DeleteFile(remotePath));
+                    return;
+                }
+                catch
+                {
+                    // Fallback to rm with admin permissions
+                }
+                finally
+                {
+                    _lock.Release();
+                }
+            }
+
+            string escapedPath = remotePath.Replace("'", "'\\''");
+            var cmdRes = await RunCommandAsync($"rm -f -- '{escapedPath}'");
+            if (!cmdRes.IsSuccess)
+            {
+                throw new Exception($"Delete failed: {cmdRes.Error}");
+            }
+        }
+
         public IDisposable StartPortForward(string remoteHost, uint remotePort, uint localPort)
         {
             if (_sshClient == null || !_sshClient.IsConnected)

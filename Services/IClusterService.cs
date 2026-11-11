@@ -65,6 +65,7 @@ namespace KubeUIApp.Services
         Task<string> ReadPvcFileAsync(string pvcName, string ns, string filePath);
         Task CopyPvcFileToWindowsAsync(string pvcName, string ns, string remoteFilePath, string localWindowsPath);
         Task CopyWindowsFileToPvcAsync(string pvcName, string ns, string localWindowsPath, string remoteDestinationPath);
+        Task<bool> DeletePvcFileAsync(string pvcName, string ns, string remoteFilePath);
 
         // Secrets & Certificates / CRL Inspection
         Task<List<SecretItem>> GetSecretsAsync(string? namespaceName = null);

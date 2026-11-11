@@ -218,6 +218,45 @@ namespace KubeUIApp.Views
             }
         }
 
+        private async void OnDeleteFileClick(object sender, RoutedEventArgs e)
+        {
+            if (DgFiles.SelectedItem is RemoteFileInfo item)
+            {
+                if (item.IsDirectory)
+                {
+                    MessageBox.Show("Deleting folders from PVC explorer is not supported. Please select an individual file to delete.", "File Required", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                var confirm = MessageBox.Show(
+                    $"Are you sure you want to permanently delete the file '{item.Name}' from this PVC?\n\nPath:\n{item.FullPath}",
+                    "Confirm File Deletion",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (confirm != MessageBoxResult.Yes)
+                    return;
+
+                try
+                {
+                    TxtStatus.Text = $"Deleting {item.Name}...";
+                    await _clusterService.DeletePvcFileAsync(_pvcName, _namespace, item.FullPath);
+                    TxtStatus.Text = "File deleted";
+                    MessageBox.Show($"File '{item.Name}' deleted successfully from PVC.", "Deleted", MessageBoxButton.OK, MessageBoxImage.Information);
+                    await LoadFilesAsync(_currentPath);
+                }
+                catch (Exception ex)
+                {
+                    TxtStatus.Text = "Delete failed";
+                    MessageBox.Show($"Failed to delete file from PVC: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            else
+            {
+                MessageBox.Show("Please select a file to delete from the list.", "Select File", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
         private void OnCopyPathClick(object sender, RoutedEventArgs e)
         {
             if (DgFiles.SelectedItem is RemoteFileInfo item)

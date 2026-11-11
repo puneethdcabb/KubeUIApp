@@ -1123,16 +1123,51 @@ namespace KubeUIApp.Services
                 }
             }
 
-            // Fallback: locate the file by name inside the PVC host mount folder
+            // Fallback: locate the file by exact filename or case-insensitive search inside the PVC host mount folder
             string rawFileName = UnquoteLsName(System.IO.Path.GetFileName(containerOrHostPath));
-            string escapedFileName = rawFileName.Replace("[", "\\[").Replace("]", "\\]").Replace("*", "\\*").Replace("?", "\\?").Replace("'", "'\\''");
-            if (!string.IsNullOrEmpty(escapedFileName))
+            if (!string.IsNullOrEmpty(rawFileName))
             {
                 string escapedBase = hostBase.Replace("'", "'\\''");
-                var findRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -name '{escapedFileName}' 2>/dev/null | head -n 1");
-                if (findRes.IsSuccess && !string.IsNullOrWhiteSpace(findRes.Output))
+                string escapedFileName = rawFileName.Replace("'", "'\\''");
+
+                // Try find by exact literal name matching
+                var findExactRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -name '{escapedFileName}' 2>/dev/null | head -n 1");
+                if (findExactRes.IsSuccess && !string.IsNullOrWhiteSpace(findExactRes.Output))
                 {
-                    return findRes.Output.Trim().Split('\n')[0].Trim();
+                    string foundPath = findExactRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                    if (!string.IsNullOrEmpty(foundPath))
+                        return foundPath;
+                }
+
+                // Try find case-insensitive matching
+                var findInameRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -iname '{escapedFileName}' 2>/dev/null | head -n 1");
+                if (findInameRes.IsSuccess && !string.IsNullOrWhiteSpace(findInameRes.Output))
+                {
+                    string foundPath = findInameRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                    if (!string.IsNullOrEmpty(foundPath))
+                        return foundPath;
+                }
+
+                // If path contained directory segments, try to locate by relative suffix or subfolders
+                string relSuffix = containerOrHostPath.StartsWith(hostBase, StringComparison.Ordinal)
+                    ? containerOrHostPath.Substring(hostBase.Length).TrimStart('/')
+                    : containerOrHostPath.TrimStart('/');
+                var segs = relSuffix.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                if (segs.Length >= 2)
+                {
+                    string parentFolder = segs[^2].Replace("'", "'\\''");
+                    var findParentRes = await _ssh.RunCommandAsync($"find '{escapedBase}' -type d -iname '{parentFolder}' 2>/dev/null | head -n 1");
+                    if (findParentRes.IsSuccess && !string.IsNullOrWhiteSpace(findParentRes.Output))
+                    {
+                        string matchedParent = findParentRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                        string candInMatched = $"{matchedParent}/{rawFileName}";
+                        string escCand = candInMatched.Replace("'", "'\\''");
+                        var checkMatched = await _ssh.RunCommandAsync($"if [ -e '{escCand}' ]; then echo 'OK'; fi");
+                        if (checkMatched.IsSuccess && checkMatched.Output.Contains("OK"))
+                        {
+                            return candInMatched;
+                        }
+                    }
                 }
             }
 
@@ -1231,6 +1266,37 @@ namespace KubeUIApp.Services
                 return;
             }
             throw new Exception("PVC is not currently mounted and host path could not be resolved.");
+        }
+
+        public async Task<bool> DeletePvcFileAsync(string pvcName, string ns, string remoteFilePath)
+        {
+            var mountInfo = await FindPvcMountAsync(pvcName, ns);
+            bool isHostFile = !string.IsNullOrEmpty(mountInfo.HostStoragePath) &&
+                              remoteFilePath.StartsWith(mountInfo.HostStoragePath, StringComparison.Ordinal);
+
+            if (mountInfo.IsMounted && !isHostFile)
+            {
+                string escapedFile = remoteFilePath.Replace("'", "'\\''");
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- rm -f -- '{escapedFile}'"));
+                if (res.IsSuccess)
+                {
+                    return true;
+                }
+                if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+                {
+                    string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                    await _ssh.DeleteFileAsync(hostFile);
+                    return true;
+                }
+                throw new Exception($"Failed to delete file from pod: {res.Error}");
+            }
+            else if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+            {
+                string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                await _ssh.DeleteFileAsync(hostFile);
+                return true;
+            }
+            throw new Exception("PVC is not currently mounted by any running pod and not accessible on host.");
         }
 
         private static List<RemoteFileInfo> ParseLsOutput(string output, string basePath)
