@@ -3,6 +3,8 @@ name: Build & Publish Standalone Exe
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -50,7 +52,7 @@ jobs:
 
       - name: Publish or Update GitHub Release
         uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
           tag_name: latest
           name: "KubeShift Manager (Latest Standalone Build)"
