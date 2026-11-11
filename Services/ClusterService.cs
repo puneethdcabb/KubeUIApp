@@ -1212,7 +1212,7 @@ namespace KubeUIApp.Services
             if (mountInfo.IsMounted && !isHostFile)
             {
                 string escapedFile = filePath.Replace("'", "'\\''");
-                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- head -c 2097152 '{escapedFile}' | base64"), timeoutSeconds: 60);
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"head -c 2097152 '{escapedFile}' | base64\""), timeoutSeconds: 60);
                 if (res.IsSuccess && !string.IsNullOrWhiteSpace(res.Output))
                 {
                     try
@@ -1235,7 +1235,7 @@ namespace KubeUIApp.Services
             {
                 string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, filePath, mustExist: true);
                 string escapedHostFile = hostFile.Replace("'", "'\\''");
-                var hostB64Res = await _ssh.RunCommandAsync($"head -c 2097152 '{escapedHostFile}' 2>/dev/null | base64", timeoutSeconds: 60);
+                var hostB64Res = await _ssh.RunCommandAsync($"sh -c \"head -c 2097152 '{escapedHostFile}' 2>/dev/null | base64\"", timeoutSeconds: 60);
                 if (hostB64Res.IsSuccess && !string.IsNullOrWhiteSpace(hostB64Res.Output))
                 {
                     try
@@ -1249,20 +1249,29 @@ namespace KubeUIApp.Services
 
                 if (fileBytes == null)
                 {
-                    return await _ssh.ReadTextFileAsync(hostFile);
+                    string rawText = await _ssh.ReadTextFileAsync(hostFile);
+                    if (!string.IsNullOrEmpty(rawText))
+                    {
+                        return rawText;
+                    }
                 }
             }
 
-            if (fileBytes != null)
+            if (fileBytes != null && fileBytes.Length > 0)
             {
                 return FormatFileContentForViewer(filePath, fileBytes);
             }
 
-            return readError ?? "Error: PVC file could not be read.";
+            return !string.IsNullOrEmpty(readError) ? readError : "Error: PVC file could not be read or file is empty.";
         }
 
         private static string FormatFileContentForViewer(string filePath, byte[] bytes)
         {
+            if (bytes == null || bytes.Length == 0)
+            {
+                return "[Empty File (0 bytes)]";
+            }
+
             string ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
             if (ext == ".der" || ext == ".cer")
             {
@@ -1286,26 +1295,20 @@ namespace KubeUIApp.Services
                 }
                 catch
                 {
-                    // Fall back to hex dump / base64 if certificate parsing is not possible
+                    // Fall back to PEM or Base64 representation
                 }
             }
             else if (ext == ".crl")
             {
-                try
-                {
-                    var sb = new System.Text.StringBuilder();
-                    sb.AppendLine("=== Certificate Revocation List (.crl) ===");
-                    sb.AppendLine($"Raw Size: {bytes.Length} bytes");
-                    sb.AppendLine();
-                    sb.AppendLine("=== PEM Encoded Format ===");
-                    sb.AppendLine("-----BEGIN X509 CRL-----");
-                    sb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
-                    sb.AppendLine("-----END X509 CRL-----");
-                    return sb.ToString();
-                }
-                catch
-                {
-                }
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("=== Certificate Revocation List (.crl) ===");
+                sb.AppendLine($"Raw Size: {bytes.Length} bytes");
+                sb.AppendLine();
+                sb.AppendLine("=== PEM Encoded Format ===");
+                sb.AppendLine("-----BEGIN X509 CRL-----");
+                sb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
+                sb.AppendLine("-----END X509 CRL-----");
+                return sb.ToString();
             }
 
             // Check if content is binary or text
@@ -1322,7 +1325,11 @@ namespace KubeUIApp.Services
 
             if (!isBinary)
             {
-                return System.Text.Encoding.UTF8.GetString(bytes);
+                string text = System.Text.Encoding.UTF8.GetString(bytes);
+                if (!string.IsNullOrEmpty(text))
+                {
+                    return text;
+                }
             }
 
             // Binary fallback: display Base64 with header
