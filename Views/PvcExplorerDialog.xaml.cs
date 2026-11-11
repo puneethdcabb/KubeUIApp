@@ -137,7 +137,13 @@ namespace KubeUIApp.Views
             {
                 TxtStatus.Text = $"Reading {item.Name}...";
                 string content = await _clusterService.ReadPvcFileAsync(_pvcName, _namespace, item.FullPath);
-                var dlg = new FileViewerDialog(item.FullPath, content)
+                var dlg = new FileViewerDialog(
+                    item.FullPath,
+                    content,
+                    customSaveHandler: async destinationPath =>
+                    {
+                        await _clusterService.CopyPvcFileToWindowsAsync(_pvcName, _namespace, item.FullPath, destinationPath);
+                    })
                 {
                     Owner = this
                 };

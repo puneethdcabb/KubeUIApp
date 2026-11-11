@@ -10,10 +10,12 @@ namespace KubeUIApp.Views
     public partial class FileViewerDialog : Window
     {
         private int _lastMatchIndex = -1;
+        private readonly Func<string, Task>? _customSaveHandler;
 
-        public FileViewerDialog(string filePath, string content)
+        public FileViewerDialog(string filePath, string content, Func<string, Task>? customSaveHandler = null)
         {
             InitializeComponent();
+            _customSaveHandler = customSaveHandler;
             TxtFilePath.Text = filePath;
             TxtContent.Text = content;
             TxtStatus.Text = $"{content.Length} characters loaded";
@@ -71,7 +73,7 @@ namespace KubeUIApp.Views
             MessageBox.Show("File content copied to clipboard!", "Copied", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        private void OnSaveClick(object sender, RoutedEventArgs e)
+        private async void OnSaveClick(object sender, RoutedEventArgs e)
         {
             var dlg = new SaveFileDialog
             {
@@ -81,8 +83,26 @@ namespace KubeUIApp.Views
 
             if (dlg.ShowDialog() == true)
             {
-                File.WriteAllText(dlg.FileName, TxtContent.Text);
-                MessageBox.Show("File saved successfully!", "Saved", MessageBoxButton.OK, MessageBoxImage.Information);
+                try
+                {
+                    TxtStatus.Text = "Saving file to Windows...";
+                    if (_customSaveHandler != null)
+                    {
+                        await _customSaveHandler(dlg.FileName);
+                    }
+                    else
+                    {
+                        File.WriteAllText(dlg.FileName, TxtContent.Text);
+                    }
+
+                    TxtStatus.Text = "Saved successfully";
+                    MessageBox.Show("File saved successfully!", "Saved", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    TxtStatus.Text = "Save failed";
+                    MessageBox.Show($"Failed to save file: {ex.Message}", "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
 

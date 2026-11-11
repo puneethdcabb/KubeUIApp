@@ -1135,21 +1135,25 @@ namespace KubeUIApp.Services
             if (!string.IsNullOrEmpty(rawFileName))
             {
                 string escapedBase = hostBase.Replace("'", "'\\''");
-
-                // Python or bash script to search for the file using exact string comparison rather than glob patterns
-                // This avoids globbing interpretation of '[', ']', spaces, or length issues with pattern matching.
                 string b64Target = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(rawFileName));
-                string pythonSearch =
-                    $"python3 -c \"import os, sys, base64; " +
-                    $"target = base64.b64decode('{b64Target}').decode('utf-8'); " +
-                    $"root = '{escapedBase}'; " +
-                    $"found = ''; " +
-                    $"for r, d, files in os.walk(root): " +
-                    $"    for f in files: " +
-                    $"        if f == target or f.lower() == target.lower(): " +
-                    $"            found = os.path.join(r, f); break; " +
-                    $"    if found: break; " +
-                    $"print(found if found else '')\" 2>/dev/null";
+
+                // 1. Direct Python exact-match script using valid multi-line structure
+                string pyScript =
+                    "import os, sys, base64\n" +
+                    $"target = base64.b64decode('{b64Target}').decode('utf-8')\n" +
+                    $"root = '{escapedBase}'\n" +
+                    "found = ''\n" +
+                    "for r, d, files in os.walk(root):\n" +
+                    "    for f in files:\n" +
+                    "        if f == target or f.lower() == target.lower():\n" +
+                    "            found = os.path.join(r, f)\n" +
+                    "            break\n" +
+                    "    if found:\n" +
+                    "        break\n" +
+                    "if found:\n" +
+                    "    print(found)\n";
+                string b64PyScript = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(pyScript));
+                string pythonSearch = $"python3 -c \"$(printf '%s' '{b64PyScript}' | base64 -d)\" 2>/dev/null";
 
                 var pyRes = await _ssh.RunCommandAsync(pythonSearch);
                 if (pyRes.IsSuccess && !string.IsNullOrWhiteSpace(pyRes.Output))
@@ -1159,7 +1163,7 @@ namespace KubeUIApp.Services
                         return foundPath;
                 }
 
-                // If python3 is not present, use bash exact filename matching loop with print0 or IFS read
+                // 2. Exact filename matching loop in bash with base64 payload
                 string bashSearch =
                     $"target=$(printf '%s' '{b64Target}' | base64 -d); " +
                     $"find '{escapedBase}' -type f 2>/dev/null | while IFS= read -r f; do " +
@@ -1175,7 +1179,7 @@ namespace KubeUIApp.Services
                         return foundPath;
                 }
 
-                // Try find case-insensitive matching in bash loop
+                // 3. Case-insensitive filename matching in bash loop
                 string bashInameSearch =
                     $"target=$(printf '%s' '{b64Target}' | base64 -d | tr '[:upper:]' '[:lower:]'); " +
                     $"find '{escapedBase}' -type f 2>/dev/null | while IFS= read -r f; do " +
@@ -1202,27 +1206,132 @@ namespace KubeUIApp.Services
             bool isHostFile = !string.IsNullOrEmpty(mountInfo.HostStoragePath) &&
                               filePath.StartsWith(mountInfo.HostStoragePath, StringComparison.Ordinal);
 
+            byte[]? fileBytes = null;
+            string? readError = null;
+
             if (mountInfo.IsMounted && !isHostFile)
             {
                 string escapedFile = filePath.Replace("'", "'\\''");
-                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- head -c 2097152 '{escapedFile}'"));
-                if (res.IsSuccess)
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- head -c 2097152 '{escapedFile}' | base64"), timeoutSeconds: 60);
+                if (res.IsSuccess && !string.IsNullOrWhiteSpace(res.Output))
                 {
-                    return res.Output;
+                    try
+                    {
+                        fileBytes = Convert.FromBase64String(res.Output.Trim());
+                    }
+                    catch
+                    {
+                        // Fall back to direct text
+                        return res.Output;
+                    }
                 }
-                if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+                else
                 {
-                    string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, filePath, mustExist: true);
-                    return await _ssh.ReadTextFileAsync(hostFile);
+                    readError = res.Error;
                 }
-                return res.Error;
             }
-            else if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
+
+            if (fileBytes == null && !string.IsNullOrEmpty(mountInfo.HostStoragePath))
             {
                 string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, filePath, mustExist: true);
-                return await _ssh.ReadTextFileAsync(hostFile);
+                string escapedHostFile = hostFile.Replace("'", "'\\''");
+                var hostB64Res = await _ssh.RunCommandAsync($"head -c 2097152 '{escapedHostFile}' 2>/dev/null | base64", timeoutSeconds: 60);
+                if (hostB64Res.IsSuccess && !string.IsNullOrWhiteSpace(hostB64Res.Output))
+                {
+                    try
+                    {
+                        fileBytes = Convert.FromBase64String(hostB64Res.Output.Trim());
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                if (fileBytes == null)
+                {
+                    return await _ssh.ReadTextFileAsync(hostFile);
+                }
             }
-            return "Error: PVC is unmounted and local path could not be resolved.";
+
+            if (fileBytes != null)
+            {
+                return FormatFileContentForViewer(filePath, fileBytes);
+            }
+
+            return readError ?? "Error: PVC file could not be read.";
+        }
+
+        private static string FormatFileContentForViewer(string filePath, byte[] bytes)
+        {
+            string ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
+            if (ext == ".der" || ext == ".cer")
+            {
+                try
+                {
+                    using var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(bytes);
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine("=== X.509 Certificate (.der) ===");
+                    sb.AppendLine($"Subject:      {cert.Subject}");
+                    sb.AppendLine($"Issuer:       {cert.Issuer}");
+                    sb.AppendLine($"Not Before:   {cert.NotBefore:yyyy-MM-dd HH:mm:ss UTC}");
+                    sb.AppendLine($"Not After:    {cert.NotAfter:yyyy-MM-dd HH:mm:ss UTC}");
+                    sb.AppendLine($"Thumbprint:   {cert.Thumbprint}");
+                    sb.AppendLine($"Serial Num:   {cert.SerialNumber}");
+                    sb.AppendLine();
+                    sb.AppendLine("=== PEM Encoded Format ===");
+                    sb.AppendLine("-----BEGIN CERTIFICATE-----");
+                    sb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
+                    sb.AppendLine("-----END CERTIFICATE-----");
+                    return sb.ToString();
+                }
+                catch
+                {
+                    // Fall back to hex dump / base64 if certificate parsing is not possible
+                }
+            }
+            else if (ext == ".crl")
+            {
+                try
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine("=== Certificate Revocation List (.crl) ===");
+                    sb.AppendLine($"Raw Size: {bytes.Length} bytes");
+                    sb.AppendLine();
+                    sb.AppendLine("=== PEM Encoded Format ===");
+                    sb.AppendLine("-----BEGIN X509 CRL-----");
+                    sb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
+                    sb.AppendLine("-----END X509 CRL-----");
+                    return sb.ToString();
+                }
+                catch
+                {
+                }
+            }
+
+            // Check if content is binary or text
+            bool isBinary = false;
+            int checkLen = Math.Min(bytes.Length, 1024);
+            for (int i = 0; i < checkLen; i++)
+            {
+                if (bytes[i] == 0)
+                {
+                    isBinary = true;
+                    break;
+                }
+            }
+
+            if (!isBinary)
+            {
+                return System.Text.Encoding.UTF8.GetString(bytes);
+            }
+
+            // Binary fallback: display Base64 with header
+            var binSb = new System.Text.StringBuilder();
+            binSb.AppendLine($"=== Binary File ({bytes.Length} bytes) ===");
+            binSb.AppendLine("Use 'Copy to Windows File...' in the toolbar to save this exact binary file to Windows.");
+            binSb.AppendLine();
+            binSb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
+            return binSb.ToString();
         }
 
         public async Task CopyPvcFileToWindowsAsync(string pvcName, string ns, string remoteFilePath, string localWindowsPath)
