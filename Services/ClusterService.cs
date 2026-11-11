@@ -1095,6 +1095,24 @@ namespace KubeUIApp.Services
             if (containerOrHostPath.StartsWith(hostBase, StringComparison.Ordinal))
             {
                 candidates.Add(containerOrHostPath);
+
+                // If containerOrHostPath already starts with hostBase, also check if it contains mountFolderName or subPath
+                // e.g. hostBase/mountFolder/relative vs hostBase/relative
+                string subRel = containerOrHostPath.Substring(hostBase.Length).TrimStart('/');
+                if (!string.IsNullOrEmpty(mountInfo.SubPath))
+                {
+                    string sp = mountInfo.SubPath.Trim('/');
+                    if (!subRel.StartsWith(sp + "/", StringComparison.OrdinalIgnoreCase) && subRel != sp)
+                    {
+                        candidates.Add($"{hostBase}/{sp}/{subRel}");
+                    }
+                }
+
+                string mountFolderName = mountInfo.MountPath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
+                if (!string.IsNullOrEmpty(mountFolderName) && !subRel.StartsWith(mountFolderName + "/", StringComparison.OrdinalIgnoreCase) && subRel != mountFolderName)
+                {
+                    candidates.Add($"{hostBase}/{mountFolderName}/{subRel}");
+                }
             }
             else
             {
@@ -1194,6 +1212,25 @@ namespace KubeUIApp.Services
                     string foundPath = bashInameRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
                     if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith(hostBase, StringComparison.Ordinal))
                         return foundPath;
+                }
+
+                // 4. Fallback search across any sibling pod directories or csi mounts if kubelet pod path changed or was restarted
+                if (hostBase.StartsWith("/var/lib/kubelet/pods/", StringComparison.Ordinal))
+                {
+                    string broadBashSearch =
+                        $"target=$(printf '%s' '{b64Target}' | base64 -d); " +
+                        $"find /var/lib/kubelet/pods/*/volumes/* -type f 2>/dev/null | while IFS= read -r f; do " +
+                        $"bn=\"${{f##*/}}\"; " +
+                        $"if [ \"$bn\" = \"$target\" ]; then echo \"$f\"; break; fi; " +
+                        $"done";
+
+                    var broadRes = await _ssh.RunCommandAsync(broadBashSearch);
+                    if (broadRes.IsSuccess && !string.IsNullOrWhiteSpace(broadRes.Output))
+                    {
+                        string foundPath = broadRes.Output.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+                        if (!string.IsNullOrEmpty(foundPath) && foundPath.StartsWith("/var/lib/kubelet/pods/", StringComparison.Ordinal))
+                            return foundPath;
+                    }
                 }
             }
 
@@ -1350,16 +1387,51 @@ namespace KubeUIApp.Services
             if (mountInfo.IsMounted && !isHostFile)
             {
                 string escapedFile = remoteFilePath.Replace("'", "'\\''");
-                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- base64 '{escapedFile}'"), timeoutSeconds: 120);
+                var res = await _ssh.RunCommandAsync(BuildKubeCmd($"exec '{mountInfo.PodName}' -n '{ns}' -c '{mountInfo.ContainerName}' -- sh -c \"base64 '{escapedFile}'\""), timeoutSeconds: 120);
                 if (res.IsSuccess && !string.IsNullOrWhiteSpace(res.Output))
                 {
                     byte[] bytes = Convert.FromBase64String(res.Output.Trim());
                     await System.IO.File.WriteAllBytesAsync(localWindowsPath, bytes);
                     return;
                 }
+
+                // If pod base64 failed, try staging via pod to node or oc cp if available
+                string stagingTmp = $"/tmp/pvc_copy_{Guid.NewGuid():N}.tmp";
+                var cpPodRes = await _ssh.RunCommandAsync(BuildKubeCmd($"cp '{ns}/{mountInfo.PodName}':\"{escapedFile}\" '{stagingTmp}' -c '{mountInfo.ContainerName}'"), timeoutSeconds: 120);
+                if (cpPodRes.IsSuccess)
+                {
+                    try
+                    {
+                        await _ssh.DownloadFileAsync(stagingTmp, localWindowsPath);
+                        return;
+                    }
+                    finally
+                    {
+                        await _ssh.RunCommandAsync($"rm -f '{stagingTmp}'");
+                    }
+                }
+
                 if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
                 {
                     string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                    string escapedHost = hostFile.Replace("'", "'\\''");
+
+                    // Staging with cp on host to eliminate any bracket or quoting issues
+                    string hostStage = $"/tmp/pvc_host_{Guid.NewGuid():N}.tmp";
+                    var stageRes = await _ssh.RunCommandAsync($"cp -f -- '{escapedHost}' '{hostStage}' 2>/dev/null || cp -f '{escapedHost}' '{hostStage}'");
+                    if (stageRes.IsSuccess)
+                    {
+                        try
+                        {
+                            await _ssh.DownloadFileAsync(hostStage, localWindowsPath);
+                            return;
+                        }
+                        finally
+                        {
+                            await _ssh.RunCommandAsync($"rm -f '{hostStage}'");
+                        }
+                    }
+
                     await _ssh.DownloadFileAsync(hostFile, localWindowsPath);
                     return;
                 }
@@ -1368,6 +1440,24 @@ namespace KubeUIApp.Services
             else if (!string.IsNullOrEmpty(mountInfo.HostStoragePath))
             {
                 string hostFile = await ResolvePvcHostFilePathAsync(mountInfo, remoteFilePath, mustExist: true);
+                string escapedHost = hostFile.Replace("'", "'\\''");
+
+                // Staging with cp on host to eliminate bracket / space / long path issues
+                string hostStage = $"/tmp/pvc_host_{Guid.NewGuid():N}.tmp";
+                var stageRes = await _ssh.RunCommandAsync($"cp -f -- '{escapedHost}' '{hostStage}' 2>/dev/null || cp -f '{escapedHost}' '{hostStage}'");
+                if (stageRes.IsSuccess)
+                {
+                    try
+                    {
+                        await _ssh.DownloadFileAsync(hostStage, localWindowsPath);
+                        return;
+                    }
+                    finally
+                    {
+                        await _ssh.RunCommandAsync($"rm -f '{hostStage}'");
+                    }
+                }
+
                 await _ssh.DownloadFileAsync(hostFile, localWindowsPath);
                 return;
             }
