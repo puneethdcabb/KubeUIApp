@@ -328,7 +328,7 @@ namespace KubeUIApp.Services
 
             // Fallback to command line `ls -la` executed with full sudo/root privileges (GNU & BusyBox compatible)
             string escapedPath = path.Replace("'", "'\\''");
-            var cmdRes = await RunCommandAsync($"ls -la -N --time-style=iso '{escapedPath}' 2>/dev/null || ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'");
+            var cmdRes = await RunCommandAsync($"ls -la -N --time-style=long-iso '{escapedPath}' 2>/dev/null || ls -la --time-style=long-iso '{escapedPath}' 2>/dev/null || ls -la -N --time-style=iso '{escapedPath}' 2>/dev/null || ls -la --time-style=iso '{escapedPath}' 2>/dev/null || ls -la '{escapedPath}'");
             if (cmdRes.IsSuccess)
             {
                 var lines = cmdRes.Output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -356,8 +356,10 @@ namespace KubeUIApp.Services
 
                     string perms = GetToken(0);
                     string token5 = GetToken(5);
+                    string token6 = GetToken(6);
                     bool isIsoDate = token5.Length == 10 && token5[4] == '-' && token5[7] == '-';
-                    int nameStartIdx = isIsoDate ? 7 : (tokenRanges.Count >= 9 ? 8 : 7);
+                    bool isShortIsoDate = !isIsoDate && token5.Length == 5 && token5[2] == '-' && token6.Length >= 5 && token6[2] == ':';
+                    int nameStartIdx = (isIsoDate || isShortIsoDate) ? 7 : (tokenRanges.Count >= 9 ? 8 : 7);
                     if (tokenRanges.Count <= nameStartIdx)
                         continue;
 
@@ -379,11 +381,15 @@ namespace KubeUIApp.Services
                     DateTime dt = default;
                     if (isIsoDate)
                     {
-                        DateTime.TryParse(token5 + " " + GetToken(6), out dt);
+                        DateTime.TryParse(token5 + " " + token6, out dt);
+                    }
+                    else if (isShortIsoDate)
+                    {
+                        DateTime.TryParse($"{DateTime.Now.Year}-{token5} {token6}", out dt);
                     }
                     else if (nameStartIdx == 8)
                     {
-                        DateTime.TryParse($"{token5} {GetToken(6)} {GetToken(7)}", out dt);
+                        DateTime.TryParse($"{token5} {token6} {GetToken(7)}", out dt);
                     }
 
                     list.Add(new RemoteFileInfo
