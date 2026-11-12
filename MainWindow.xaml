@@ -182,8 +182,11 @@
                     <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
                         <TextBlock Text="{Binding TotalRoutesCount, StringFormat='Routes: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="#06B6D4"/>
                     </Border>
-                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,0,2">
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
                         <TextBlock Text="{Binding TotalContainersCount, StringFormat='Containers: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentWarningBrush}"/>
+                    </Border>
+                    <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,0,2">
+                        <TextBlock Text="{Binding TotalOsCertsCount, StringFormat='OS Certs/CRLs: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="#10B981"/>
                     </Border>
                 </WrapPanel>
             </Grid>
@@ -470,6 +473,7 @@
                         </StackPanel>
 
                         <Button Content="👁️ Inspect Secret &amp; Certs" Command="{Binding ViewSecretDataCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
+                        <Button Content="🔁 Force Re-Sync" Command="{Binding ForceResyncSecretCommand}" Style="{StaticResource SuccessBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}" ToolTip="Force cert-manager to re-sync the Certificate/Secret (oc annotate certificate &lt;name&gt; -n &lt;ns&gt; cert-manager.io/issue-temporary-certificate- --overwrite)"/>
                         <Button Content="🔍 Describe Secret" Command="{Binding DescribeSecretCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
                         <Button Content="📄 View YAML" Command="{Binding ViewSecretYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
                         <Button Content="✏️ Edit &amp; Apply YAML" Command="{Binding EditSecretYamlCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedSecret, Converter={StaticResource NullToVis}}"/>
@@ -482,6 +486,7 @@
                         <DataGrid.ContextMenu>
                             <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
                                 <MenuItem Header="👁️ Inspect Secret &amp; Certificates..." Command="{Binding ViewSecretDataCommand}"/>
+                                <MenuItem Header="🔁 Force Re-Sync Certificate / Secret (cert-manager)" Command="{Binding ForceResyncSecretCommand}"/>
                                 <MenuItem Header="🔍 Describe Secret" Command="{Binding DescribeSecretCommand}"/>
                                 <MenuItem Header="📄 View YAML" Command="{Binding ViewSecretYamlCommand}"/>
                                 <MenuItem Header="✏️ Edit &amp; Apply YAML..." Command="{Binding EditSecretYamlCommand}"/>
@@ -764,7 +769,147 @@
                 </Grid>
             </TabItem>
 
-            <!-- TAB 7: SETTINGS & PROFILES -->
+            <!-- TAB 7: OS LEVEL SSL/TLS CERTIFICATES, CA TRUST & CRLS -->
+            <TabItem Header="🛡️ OS SSL/TLS &amp; CA">
+                <Grid Margin="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="1.35*"/>
+                        <RowDefinition Height="5"/>
+                        <RowDefinition Height="1*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Row 0: Filter, Scope, Custom Path & Summary Badges -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,6" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
+                            <TextBlock Text="Store Scope:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <ComboBox ItemsSource="{Binding CertScopes}" SelectedItem="{Binding SelectedCertScope}" Width="210" Height="30"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
+                            <TextBlock Text="Type:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <ComboBox ItemsSource="{Binding CertKindFilters}" SelectedItem="{Binding SelectedCertKindFilter}" Width="165" Height="30"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
+                            <TextBlock Text="Search:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding CertSearchText, UpdateSourceTrigger=PropertyChanged}" Width="210" Height="30" ToolTip="Search by CN, Subject, Issuer, Thumbprint, Serial, or File Path"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,2,12,2">
+                            <TextBlock Text="Custom Path:" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{DynamicResource TextMutedBrush}"/>
+                            <TextBox Text="{Binding CustomCertScanPath, UpdateSourceTrigger=PropertyChanged}" Width="210" Height="30" ToolTip="Optional custom node directory or file path to scan for .crt/.cer/.pem/.der/.crl"/>
+                        </StackPanel>
+                    </WrapPanel>
+
+                    <!-- Row 1: Action Buttons & Status Counters -->
+                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+                            <Button Content="👁️ View / Inspect" Command="{Binding InspectOsCertificateCommand}" Style="{StaticResource PrimaryBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedOsCertificate, Converter={StaticResource NullToVis}}" ToolTip="View full decoded certificate / CRL details"/>
+                            <Button Content="✅ Verify Trust" Command="{Binding VerifyOsCertificateTrustCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedOsCertificate, Converter={StaticResource NullToVis}}" ToolTip="Run openssl verify against OS &amp; Kubernetes CA bundles"/>
+                            <Button Content="💾 Copy to Windows" Command="{Binding ExportOsCertificateCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedOsCertificate, Converter={StaticResource NullToVis}}" ToolTip="Copy selected certificate or CRL file to Windows"/>
+                            <Button Content="🔁 Replace File..." Command="{Binding ReplaceOsCertificateCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedOsCertificate, Converter={StaticResource NullToVis}}" ToolTip="Replace selected certificate or CRL file on the node with a file from Windows"/>
+                            <Button Content="📤 Upload Cert / CRL..." Command="{Binding UploadOsCertificateCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,6,2" ToolTip="Upload a new certificate or CRL file to the selected store directory on the node"/>
+                            <Button Content="📥 Install CA Anchor..." Command="{Binding InstallOsCaCertCommand}" Style="{StaticResource SuccessBtn}" Height="30" Margin="0,2,6,2" ToolTip="Upload a CA certificate to /etc/pki/ca-trust/source/anchors and run update-ca-trust extract"/>
+                            <Button Content="🗑️ Delete" Command="{Binding DeleteOsCertificateCommand}" Style="{StaticResource DangerBtn}" Height="30" Margin="0,2,6,2" IsEnabled="{Binding SelectedOsCertificate, Converter={StaticResource NullToVis}}" ToolTip="Delete selected certificate or CRL file from the node and refresh OS trust"/>
+                            <Button Content="🔄 Scan / Refresh" Command="{Binding RefreshOsCertificatesCommand}" Style="{StaticResource ModernBtn}" Height="30" Margin="0,2,0,2"/>
+                        </WrapPanel>
+
+                        <WrapPanel Grid.Column="1" VerticalAlignment="Center">
+                            <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                                <TextBlock Text="{Binding TotalOsCertsCount, StringFormat='Total: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}"/>
+                            </Border>
+                            <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                                <TextBlock Text="{Binding ValidOsCertsCount, StringFormat='Valid: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentSuccessBrush}"/>
+                            </Border>
+                            <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,6,2">
+                                <TextBlock Text="{Binding ExpiringOrExpiredOsCertsCount, StringFormat='Expiring/Expired: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AccentDangerBrush}"/>
+                            </Border>
+                            <Border Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4" Margin="0,2,0,2">
+                                <TextBlock Text="{Binding TotalOsCrlsCount, StringFormat='CRLs: {0}'}" FontSize="11" FontWeight="SemiBold" Foreground="#F59E0B"/>
+                            </Border>
+                        </WrapPanel>
+                    </Grid>
+
+                    <!-- Row 2: Certificates & CRLs DataGrid -->
+                    <DataGrid Grid.Row="2" ItemsSource="{Binding FilteredOsCertificates}" SelectedItem="{Binding SelectedOsCertificate}" MouseDoubleClick="OnOsCertDoubleClick">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu Background="{DynamicResource CardBrush}" Foreground="{DynamicResource TextLightBrush}">
+                                <MenuItem Header="👁️ View / Inspect Full Details" Command="{Binding InspectOsCertificateCommand}"/>
+                                <MenuItem Header="✅ Verify OS Trust Chain (openssl verify)" Command="{Binding VerifyOsCertificateTrustCommand}"/>
+                                <MenuItem Header="💾 Copy to Windows..." Command="{Binding ExportOsCertificateCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🔁 Replace Selected Certificate / CRL File..." Command="{Binding ReplaceOsCertificateCommand}"/>
+                                <MenuItem Header="📤 Upload New Certificate / CRL File..." Command="{Binding UploadOsCertificateCommand}"/>
+                                <MenuItem Header="📥 Install New CA Trust Anchor..." Command="{Binding InstallOsCaCertCommand}"/>
+                                <Separator Background="{DynamicResource BorderBrush}"/>
+                                <MenuItem Header="🗑️ Delete Certificate / CRL File" Command="{Binding DeleteOsCertificateCommand}"/>
+                                <MenuItem Header="🔄 Refresh OS Certificates &amp; CRLs" Command="{Binding RefreshOsCertificatesCommand}"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="" Binding="{Binding DisplayIcon}" Width="38"/>
+                            <DataGridTextColumn Header="Store / Source" Binding="{Binding StoreCategory}" Width="145"/>
+                            <DataGridTextColumn Header="Kind" Binding="{Binding Kind}" Width="115"/>
+                            <DataGridTextColumn Header="Name / Common Name" Binding="{Binding Name}" Width="1.6*"/>
+                            <DataGridTextColumn Header="Issuer" Binding="{Binding Issuer}" Width="1.6*"/>
+
+                            <DataGridTemplateColumn Header="Status" Width="115">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border CornerRadius="8" Padding="6,2" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                            <Border.Background>
+                                                <SolidColorBrush Color="{Binding StatusColor}"/>
+                                            </Border.Background>
+                                            <TextBlock Text="{Binding ValidityStatus}" FontSize="11" FontWeight="SemiBold" Foreground="#11111B"/>
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTextColumn Header="Valid From" Binding="{Binding NotBeforeDisplay}" Width="125"/>
+                            <DataGridTextColumn Header="Expires / Next Update" Binding="{Binding NotAfterDisplay}" Width="135"/>
+                            <DataGridTextColumn Header="Remaining" Binding="{Binding DaysRemainingDisplay}" Width="85"/>
+                            <DataGridTextColumn Header="Thumbprint / SHA1" Binding="{Binding Thumbprint}" Width="140"/>
+                            <DataGridTextColumn Header="File Path" Binding="{Binding FilePath}" Width="2*"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <GridSplitter Grid.Row="3" Height="5" HorizontalAlignment="Stretch" Background="{DynamicResource BorderBrush}"/>
+
+                    <!-- Row 4: Live X.509 / OpenSSL / CRL Details Inspector Pane -->
+                    <Border Grid.Row="4" Background="{DynamicResource CardBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" CornerRadius="6" Padding="8">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="🔎 Selected Certificate / CRL Live X.509 &amp; OpenSSL Inspector" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimaryBrush}" Margin="0,0,0,6"/>
+                            <TextBox Grid.Row="1"
+                                     Text="{Binding SelectedOsCertDetails, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     FontFamily="Consolas"
+                                     FontSize="12"
+                                     TextWrapping="NoWrap"
+                                     AcceptsReturn="True"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     Background="{DynamicResource SurfaceBrush}"
+                                     Foreground="{DynamicResource TextLightBrush}"
+                                     BorderThickness="0"
+                                     Padding="8"/>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 8: SETTINGS & PROFILES -->
             <TabItem Header="⚙️ Settings &amp; Profiles">
                 <ScrollViewer Margin="0,12,0,0" VerticalScrollBarVisibility="Auto">
                     <Grid MaxWidth="850" HorizontalAlignment="Left">

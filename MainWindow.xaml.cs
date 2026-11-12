@@ -97,6 +97,14 @@ namespace KubeUIApp
             }
         }
 
+        private void OnOsCertDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (ViewModel?.SelectedOsCertificate != null && ViewModel.InspectOsCertificateCommand.CanExecute(null))
+            {
+                ViewModel.InspectOsCertificateCommand.Execute(null);
+            }
+        }
+
         private void OnFileDoubleClick(object sender, MouseButtonEventArgs e)
         {
             if (ViewModel?.SelectedRemoteFile != null && ViewModel.OpenRemoteItemCommand.CanExecute(ViewModel.SelectedRemoteFile))

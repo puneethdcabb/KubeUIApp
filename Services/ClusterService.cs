@@ -1698,6 +1698,13 @@ namespace KubeUIApp.Services
                             secret.CreatedAt = dt;
                             secret.AgeDisplay = FormatAge(dt);
                         }
+                        if (meta.TryGetProperty("annotations", out var ann) && ann.ValueKind == JsonValueKind.Object)
+                        {
+                            if (ann.TryGetProperty("cert-manager.io/certificate-name", out var certNameProp))
+                            {
+                                secret.CertificateName = certNameProp.GetString() ?? "";
+                            }
+                        }
                     }
 
                     if (elem.TryGetProperty("type", out var t))
@@ -1819,6 +1826,241 @@ namespace KubeUIApp.Services
         {
             var res = await _ssh.RunCommandAsync(BuildKubeCmd($"delete secret '{name}' -n '{ns}'"));
             return res.IsSuccess;
+        }
+
+        public async Task<(bool Success, string Message)> ForceResyncSecretCertificateAsync(SecretItem secret)
+        {
+            string ns = secret.Namespace;
+            string certName = secret.CertificateName;
+            string issuerSecretName = "workplace-internal-ca-secret";
+            var report = new System.Text.StringBuilder();
+            report.AppendLine($"=== CERT-MANAGER SECRET FORCE RE-SYNC REPORT ===");
+            report.AppendLine($"Secret:    {secret.Name}");
+            report.AppendLine($"Namespace: {ns}");
+            report.AppendLine();
+
+            // 1. Resolve the associated Certificate resource and Issuer CA secret name
+            var certsRes = await _ssh.RunCommandAsync(
+                BuildKubeCmd($"get certificate -n '{ns}' -o json 2>/dev/null"));
+
+            bool hasMatchingCertificate = false;
+            if (certsRes.IsSuccess && !string.IsNullOrWhiteSpace(certsRes.Output))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(certsRes.Output);
+                    if (doc.RootElement.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in items.EnumerateArray())
+                        {
+                            string cName = item.TryGetProperty("metadata", out var m) && m.TryGetProperty("name", out var n)
+                                ? (n.GetString() ?? "")
+                                : "";
+                            string sName = item.TryGetProperty("spec", out var sp) && sp.TryGetProperty("secretName", out var sn)
+                                ? (sn.GetString() ?? "")
+                                : "";
+
+                            if (string.Equals(sName, secret.Name, StringComparison.OrdinalIgnoreCase) ||
+                                (!string.IsNullOrWhiteSpace(certName) && string.Equals(cName, certName, StringComparison.OrdinalIgnoreCase)) ||
+                                string.Equals(cName, secret.Name, StringComparison.OrdinalIgnoreCase))
+                            {
+                                certName = cName;
+                                hasMatchingCertificate = true;
+
+                                // Check if the Issuer points to a specific CA secret in this namespace
+                                if (item.TryGetProperty("spec", out var specElem) &&
+                                    specElem.TryGetProperty("issuerRef", out var issuerRef) &&
+                                    issuerRef.TryGetProperty("name", out var issuerNameProp))
+                                {
+                                    string issuerName = issuerNameProp.GetString() ?? "";
+                                    if (!string.IsNullOrWhiteSpace(issuerName))
+                                    {
+                                        var issuerRes = await _ssh.RunCommandAsync(
+                                            BuildKubeCmd($"get issuer '{issuerName}' -n '{ns}' -o jsonpath='{{.spec.ca.secretName}}' 2>/dev/null"));
+                                        if (issuerRes.IsSuccess && !string.IsNullOrWhiteSpace(issuerRes.Output))
+                                        {
+                                            string detectedCaSecret = issuerRes.Output.Trim().Trim('\'', '"');
+                                            if (!string.IsNullOrWhiteSpace(detectedCaSecret))
+                                            {
+                                                issuerSecretName = detectedCaSecret;
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(certName))
+            {
+                certName = secret.Name;
+            }
+
+            // 2. Step 1 of procedure: Compare current ca.crt SHA-256 fingerprint in Secret vs live CA secret (e.g. workplace-internal-ca-secret)
+            var beforeFpRes = await _ssh.RunCommandAsync(
+                BuildKubeCmd($"get secret '{secret.Name}' -n '{ns}' -o jsonpath='{{.data.ca\\.crt}}'") +
+                " 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null");
+            string beforeCaFp = beforeFpRes.IsSuccess && !string.IsNullOrWhiteSpace(beforeFpRes.Output)
+                ? beforeFpRes.Output.Trim()
+                : "(no ca.crt or unable to read fingerprint)";
+
+            var liveCaFpRes = await _ssh.RunCommandAsync(
+                BuildKubeCmd($"get secret '{issuerSecretName}' -n '{ns}' -o jsonpath='{{.data.tls\\.crt}}'") +
+                " 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null");
+            string liveCaFp = liveCaFpRes.IsSuccess && !string.IsNullOrWhiteSpace(liveCaFpRes.Output)
+                ? liveCaFpRes.Output.Trim()
+                : "(CA secret not found in namespace)";
+
+            report.AppendLine("[1] Pre-Check CA Fingerprints (SHA-256):");
+            report.AppendLine($"    Secret '{secret.Name}' (ca.crt):        {beforeCaFp}");
+            report.AppendLine($"    Live CA '{issuerSecretName}' (tls.crt): {liveCaFp}");
+            if (beforeCaFp.StartsWith("SHA256", StringComparison.OrdinalIgnoreCase) &&
+                liveCaFp.StartsWith("SHA256", StringComparison.OrdinalIgnoreCase))
+            {
+                bool matchedBefore = string.Equals(beforeCaFp, liveCaFp, StringComparison.OrdinalIgnoreCase);
+                report.AppendLine($"    Initial State: {(matchedBefore ? "MATCHED (already in sync)" : "MISMATCHED (ca.crt was STALE)")}");
+            }
+            report.AppendLine();
+
+            // Verify that a cert-manager Certificate resource actually exists before deleting the Secret
+            if (!hasMatchingCertificate)
+            {
+                var checkCertCmd = await _ssh.RunCommandAsync(BuildKubeCmd($"get certificate '{certName}' -n '{ns}' -o name 2>/dev/null"));
+                hasMatchingCertificate = checkCertCmd.IsSuccess && !string.IsNullOrWhiteSpace(checkCertCmd.Output);
+            }
+
+            if (!hasMatchingCertificate)
+            {
+                return (false,
+                    $"Cannot safely delete-and-recreate Secret '{secret.Name}' because no cert-manager Certificate resource was found for it in namespace '{ns}'.\n\n" +
+                    report.ToString());
+            }
+
+            // 3. Step 2 of procedure: Delete the stale Secret so cert-manager auto-recreates it from the current Issuer/CA
+            report.AppendLine($"[2] Deleting stale Secret '{secret.Name}' so cert-manager recreates it from Certificate '{certName}'...");
+            var delRes = await _ssh.RunCommandAsync(BuildKubeCmd($"delete secret '{secret.Name}' -n '{ns}'"));
+            if (!delRes.IsSuccess)
+            {
+                return (false, $"Failed to delete Secret '{secret.Name}':\n{delRes.Error}\n\n{report}");
+            }
+            report.AppendLine($"    {delRes.Output.Trim()}");
+
+            // Also annotate the Certificate to ensure cert-manager immediately reconciles if needed
+            await _ssh.RunCommandAsync(
+                BuildKubeCmd($"annotate certificate '{certName}' -n '{ns}' cert-manager.io/issue-temporary-certificate- --overwrite 2>/dev/null"));
+
+            // 4. Step 3 of procedure: Wait for cert-manager to recreate the Secret and verify the new ca.crt fingerprint
+            string afterCaFp = "";
+            bool recreated = false;
+            for (int attempt = 1; attempt <= 12; attempt++)
+            {
+                await Task.Delay(1500);
+                var checkSecretRes = await _ssh.RunCommandAsync(
+                    BuildKubeCmd($"get secret '{secret.Name}' -n '{ns}' -o jsonpath='{{.data.ca\\.crt}}'") +
+                    " 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null");
+
+                if (checkSecretRes.IsSuccess && !string.IsNullOrWhiteSpace(checkSecretRes.Output))
+                {
+                    afterCaFp = checkSecretRes.Output.Trim();
+                    recreated = true;
+                    break;
+                }
+            }
+
+            var certStatusRes = await _ssh.RunCommandAsync(BuildKubeCmd($"get certificate '{certName}' -n '{ns}' 2>/dev/null"));
+            report.AppendLine();
+            report.AppendLine("[3] Post-Recreation Verification:");
+            if (!string.IsNullOrWhiteSpace(certStatusRes.Output))
+            {
+                report.AppendLine(certStatusRes.Output.Trim());
+            }
+
+            if (recreated)
+            {
+                report.AppendLine($"    New '{secret.Name}' (ca.crt):           {afterCaFp}");
+                if (liveCaFp.StartsWith("SHA256", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool matchesNow = string.Equals(afterCaFp, liveCaFp, StringComparison.OrdinalIgnoreCase);
+                    report.AppendLine($"    Verification Result: {(matchesNow ? "✅ MATCHED with live CA!" : "⚠️ Fingerprint still differs from live CA")}");
+                }
+            }
+            else
+            {
+                report.AppendLine($"    ⚠️ Secret '{secret.Name}' was not yet recreated within 18s. Check cert-manager controller status.");
+                return (false, report.ToString());
+            }
+
+            // 5. Step 4 of procedure: Discover and rollout-restart Deployments and StatefulSets in the namespace that mount/reference this Secret
+            report.AppendLine();
+            report.AppendLine($"[4] Restarting Workloads Consuming Secret '{secret.Name}':");
+
+            var workloadsToRestart = new List<(string Kind, string Name)>();
+
+            // Find Deployments & StatefulSets referencing secret.Name in volumes or env
+            foreach (string kind in new[] { "deployment", "statefulset" })
+            {
+                var wlRes = await _ssh.RunCommandAsync(BuildKubeCmd($"get {kind} -n '{ns}' -o json 2>/dev/null"));
+                if (wlRes.IsSuccess && !string.IsNullOrWhiteSpace(wlRes.Output))
+                {
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(wlRes.Output);
+                        if (doc.RootElement.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var wl in items.EnumerateArray())
+                            {
+                                string wlName = wl.TryGetProperty("metadata", out var m) && m.TryGetProperty("name", out var n)
+                                    ? (n.GetString() ?? "")
+                                    : "";
+                                if (string.IsNullOrWhiteSpace(wlName))
+                                    continue;
+
+                                string rawJson = wl.GetRawText();
+                                if (rawJson.Contains($"\"{secret.Name}\"", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    workloadsToRestart.Add((kind, wlName));
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            if (workloadsToRestart.Count == 0)
+            {
+                report.AppendLine("    (No Deployments or StatefulSets found directly mounting this Secret)");
+            }
+            else
+            {
+                foreach (var (kind, wlName) in workloadsToRestart)
+                {
+                    var restartRes = await _ssh.RunCommandAsync(
+                        BuildKubeCmd($"rollout restart {kind} '{wlName}' -n '{ns}'"));
+                    if (restartRes.IsSuccess)
+                    {
+                        var statusRes = await _ssh.RunCommandAsync(
+                            BuildKubeCmd($"rollout status {kind} '{wlName}' -n '{ns}' --timeout=60s"),
+                            timeoutSeconds: 70);
+                        string statusMsg = statusRes.IsSuccess ? "Rollout complete" : "Rollout in progress";
+                        report.AppendLine($"    ✅ {kind}/{wlName}: Restarted ({statusMsg})");
+                    }
+                    else
+                    {
+                        report.AppendLine($"    ⚠️ {kind}/{wlName}: Failed to restart ({restartRes.Error.Trim()})");
+                    }
+                }
+            }
+
+            return (true, report.ToString());
         }
 
         // Ingress & OpenShift Routes
@@ -2393,6 +2635,653 @@ namespace KubeUIApp.Services
         {
             var res = await _ssh.RunCommandAsync($"{_containerRuntime} pull '{imageName}'", timeoutSeconds: 180);
             return res.IsSuccess;
+        }
+
+        // ================= OS LEVEL SSL/TLS CERTIFICATES, CA TRUST & CRLS =================
+
+        public async Task<List<OsCertificateItem>> GetOsCertificatesAsync(string scopeFilter = "All OS & K8s Stores", string? customPath = null)
+        {
+            var results = new List<OsCertificateItem>();
+
+            string scopeKey = (scopeFilter ?? "All OS & K8s Stores").Trim();
+            string customDir = (customPath ?? "").Trim();
+            string b64CustomDir = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(customDir));
+            string b64Scope = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(scopeKey));
+
+            // Remote Python collector: gathers candidate cert/CRL files & parses CRL metadata via openssl if needed,
+            // while returning base64 bytes for standalone certs/CRLs and PEM blocks from system CA bundles so C# X509CertificateLoader can parse instantaneously.
+            string pyCollector = @"
+import os, sys, json, base64, subprocess
+
+scope = base64.b64decode('" + b64Scope + @"').decode('utf-8', 'ignore')
+custom_dir = base64.b64decode('" + b64CustomDir + @"').decode('utf-8', 'ignore').strip()
+
+search_targets = []
+if scope == 'Custom Path Only' and custom_dir:
+    search_targets.append(('Custom Path', custom_dir, False))
+else:
+    if scope in ('All OS & K8s Stores', 'OS Trust Anchors'):
+        search_targets.append(('OS Trust Anchor', '/etc/pki/ca-trust/source/anchors', False))
+        search_targets.append(('OS Trust Anchor', '/usr/share/pki/ca-trust-source/anchors', False))
+        search_targets.append(('OS Trust Anchor', '/usr/local/share/ca-certificates', False))
+    if scope in ('All OS & K8s Stores', 'OS SSL / PKI Certs & CRLs'):
+        search_targets.append(('OS PKI / TLS', '/etc/pki/tls/certs', False))
+        search_targets.append(('OS PKI / TLS', '/etc/pki/tls/misc', False))
+        search_targets.append(('OS PKI / TLS', '/etc/ssl/certs', False))
+        search_targets.append(('OS PKI / TLS', '/etc/pki/CA', False))
+    if scope in ('All OS & K8s Stores', 'Kubernetes / MicroShift PKI'):
+        search_targets.append(('MicroShift PKI', '/var/lib/microshift/certs', False))
+        search_targets.append(('Kubernetes PKI', '/etc/kubernetes/pki', False))
+        search_targets.append(('Kubelet PKI', '/var/lib/kubelet/pki', False))
+    if scope in ('All OS & K8s Stores', 'PVC / Workload PKI'):
+        search_targets.append(('PVC / Workload PKI', '/var/lib/kubelet/pods', False))
+    if scope in ('All OS & K8s Stores', 'System CA Bundle (Root CAs)'):
+        if os.path.isfile('/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'):
+            search_targets.append(('System CA Bundle', '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', True))
+        elif os.path.isfile('/etc/pki/tls/certs/ca-bundle.crt'):
+            search_targets.append(('System CA Bundle', '/etc/pki/tls/certs/ca-bundle.crt', True))
+        elif os.path.isfile('/etc/ssl/certs/ca-certificates.crt'):
+            search_targets.append(('System CA Bundle', '/etc/ssl/certs/ca-certificates.crt', True))
+    if custom_dir:
+        search_targets.append(('Custom Path', custom_dir, False))
+
+exts = ('.crt', '.cer', '.pem', '.der', '.crl')
+skip_bundles = {'ca-bundle.crt', 'ca-bundle.trust.crt', 'tls-ca-bundle.pem', 'ca-certificates.crt', 'email-ca-bundle.pem', 'objsign-ca-bundle.pem'}
+seen_realpaths = set()
+items = []
+
+def inspect_crl(filepath, raw_bytes):
+    is_pem = b'-----BEGIN' in raw_bytes
+    cmd = ['openssl', 'crl', '-noout', '-issuer', '-lastupdate', '-nextupdate', '-crlnumber']
+    if not is_pem:
+        cmd.extend(['-inform', 'DER'])
+    cmd.extend(['-in', filepath])
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4, text=True)
+        out = p.stdout if p.returncode == 0 else ''
+        # Also count revoked certificates quickly
+        cmd_text = ['openssl', 'crl', '-noout', '-text']
+        if not is_pem:
+            cmd_text.extend(['-inform', 'DER'])
+        cmd_text.extend(['-in', filepath])
+        p2 = subprocess.run(cmd_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4, text=True)
+        rev_count = p2.stdout.count('Serial Number:') if p2.returncode == 0 else 0
+        return out, rev_count
+    except Exception:
+        return '', 0
+
+for cat, path, is_bundle in search_targets:
+    if not os.path.exists(path):
+        continue
+    if is_bundle and os.path.isfile(path):
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            # Split bundle into individual PEM certificates (cap at 220 to keep UI snappy)
+            blocks = content.split('-----END CERTIFICATE-----')
+            idx = 0
+            for blk in blocks:
+                pos = blk.find('-----BEGIN CERTIFICATE-----')
+                if pos >= 0:
+                    pem_str = blk[pos:] + '-----END CERTIFICATE-----\n'
+                    # Look for comments/alias before BEGIN CERTIFICATE
+                    header_part = blk[:pos].strip().splitlines()
+                    alias = header_part[-1].lstrip('# ').strip() if header_part else ''
+                    items.append({
+                        'cat': cat,
+                        'path': path,
+                        'name': alias if alias else f'Bundle Root CA #{idx+1}',
+                        'idx': idx,
+                        'kind': 'bundle_cert',
+                        'b64': base64.b64encode(pem_str.encode('utf-8')).decode('ascii')
+                    })
+                    idx += 1
+                    if idx >= 220:
+                        break
+        except Exception:
+            pass
+        continue
+
+    if os.path.isfile(path):
+        file_list = [path]
+    else:
+        file_list = []
+        for root, dirs, files in os.walk(path):
+            for fn in files:
+                fl = fn.lower()
+                if fl.endswith(exts):
+                    if cat == 'OS PKI / TLS' and fn in skip_bundles:
+                        continue
+                    # For /etc/ssl/certs skip hash symlinks like a1b2c3d4.0
+                    full_p = os.path.join(root, fn)
+                    if os.path.islink(full_p) and cat == 'OS PKI / TLS':
+                        continue
+                    file_list.append(full_p)
+            if len(file_list) >= 250:
+                break
+
+    for fp in file_list[:250]:
+        try:
+            rp = os.path.realpath(fp)
+            if rp in seen_realpaths and cat != 'Custom Path':
+                continue
+            seen_realpaths.add(rp)
+            st = os.stat(fp)
+            if st.st_size <= 0 or st.st_size > 1048576:
+                continue
+            with open(fp, 'rb') as f:
+                raw = f.read()
+            fn = os.path.basename(fp)
+            if fn.lower().endswith('.crl') or b'BEGIN X509 CRL' in raw or b'BEGIN CERTIFICATE REVOCATION LIST' in raw:
+                crl_meta, rev_count = inspect_crl(fp, raw)
+                items.append({
+                    'cat': cat,
+                    'path': fp,
+                    'name': fn,
+                    'idx': -1,
+                    'kind': 'crl',
+                    'crl_meta': crl_meta,
+                    'rev_count': rev_count,
+                    'b64': base64.b64encode(raw[:65536]).decode('ascii')
+                })
+            else:
+                items.append({
+                    'cat': cat,
+                    'path': fp,
+                    'name': fn,
+                    'idx': -1,
+                    'kind': 'cert',
+                    'b64': base64.b64encode(raw).decode('ascii')
+                })
+        except Exception:
+            pass
+
+print(json.dumps(items))
+";
+
+            string b64Script = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(pyCollector));
+            var res = await _ssh.RunCommandAsync($"python3 -c \"$(printf '%s' '{b64Script}' | base64 -d)\" 2>/dev/null", timeoutSeconds: 60);
+
+            if (res.IsSuccess && !string.IsNullOrWhiteSpace(res.Output))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(res.Output.Trim());
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var elem in doc.RootElement.EnumerateArray())
+                        {
+                            string cat = elem.TryGetProperty("cat", out var cProp) ? (cProp.GetString() ?? "OS PKI") : "OS PKI";
+                            string path = elem.TryGetProperty("path", out var pProp) ? (pProp.GetString() ?? "") : "";
+                            string name = elem.TryGetProperty("name", out var nProp) ? (nProp.GetString() ?? "") : "";
+                            int idx = elem.TryGetProperty("idx", out var iProp) ? iProp.GetInt32() : -1;
+                            string kind = elem.TryGetProperty("kind", out var kProp) ? (kProp.GetString() ?? "cert") : "cert";
+                            string b64 = elem.TryGetProperty("b64", out var bProp) ? (bProp.GetString() ?? "") : "";
+
+                            if (string.IsNullOrEmpty(b64))
+                                continue;
+
+                            byte[] rawBytes;
+                            try
+                            {
+                                rawBytes = Convert.FromBase64String(b64);
+                            }
+                            catch
+                            {
+                                continue;
+                            }
+
+                            if (kind == "crl")
+                            {
+                                string crlMeta = elem.TryGetProperty("crl_meta", out var cmProp) ? (cmProp.GetString() ?? "") : "";
+                                int revCount = elem.TryGetProperty("rev_count", out var rcProp) ? rcProp.GetInt32() : 0;
+                                var crlItem = ParseCrlMetadataItem(name, cat, path, crlMeta, revCount, rawBytes);
+                                results.Add(crlItem);
+                            }
+                            else
+                            {
+                                var parsedCerts = ParseX509CertificateItems(name, cat, path, idx, rawBytes);
+                                results.AddRange(parsedCerts);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.LogError("ClusterService.GetOsCertificatesAsync", "Failed to parse OS certificates JSON payload.", ex);
+                }
+            }
+
+            return results;
+        }
+
+        private static OsCertificateItem ParseCrlMetadataItem(string name, string category, string filePath, string crlMeta, int revokedCount, byte[] rawBytes)
+        {
+            string issuer = "Unknown Issuer";
+            string serial = "-";
+            DateTime? lastUpdate = null;
+            DateTime? nextUpdate = null;
+
+            if (!string.IsNullOrWhiteSpace(crlMeta))
+            {
+                var lines = crlMeta.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var line in lines)
+                {
+                    if (line.StartsWith("issuer=", StringComparison.OrdinalIgnoreCase))
+                        issuer = line.Substring("issuer=".Length).Trim();
+                    else if (line.StartsWith("lastUpdate=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string dtStr = line.Substring("lastUpdate=".Length).Replace("GMT", "").Trim();
+                        if (DateTime.TryParse(dtStr, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var dt))
+                            lastUpdate = dt;
+                    }
+                    else if (line.StartsWith("nextUpdate=", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string dtStr = line.Substring("nextUpdate=".Length).Replace("GMT", "").Trim();
+                        if (DateTime.TryParse(dtStr, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var dt))
+                            nextUpdate = dt;
+                    }
+                    else if (line.StartsWith("crlNumber=", StringComparison.OrdinalIgnoreCase))
+                        serial = line.Substring("crlNumber=".Length).Trim();
+                }
+            }
+
+            string thumbprint = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(rawBytes)).Substring(0, 40);
+            string pem = System.Text.Encoding.UTF8.GetString(rawBytes).Contains("-----BEGIN")
+                ? System.Text.Encoding.UTF8.GetString(rawBytes)
+                : $"-----BEGIN X509 CRL-----\n{Convert.ToBase64String(rawBytes, Base64FormattingOptions.InsertLineBreaks)}\n-----END X509 CRL-----";
+
+            return new OsCertificateItem
+            {
+                Name = name,
+                StoreCategory = category,
+                Kind = "CRL",
+                CommonName = $"{name} (Revoked: {revokedCount})",
+                Subject = $"CRL Issued by: {issuer}",
+                Issuer = issuer,
+                SerialNumber = serial,
+                Thumbprint = thumbprint,
+                NotBefore = lastUpdate,
+                NotAfter = nextUpdate,
+                FilePath = filePath,
+                BundleIndex = -1,
+                RevokedCount = revokedCount,
+                RawPem = pem
+            };
+        }
+
+        private static List<OsCertificateItem> ParseX509CertificateItems(string name, string category, string filePath, int bundleIndex, byte[] rawBytes)
+        {
+            var items = new List<OsCertificateItem>();
+            try
+            {
+                string asText = System.Text.Encoding.UTF8.GetString(rawBytes);
+                if (asText.Contains("-----BEGIN CERTIFICATE-----"))
+                {
+                    var blocks = asText.Split("-----END CERTIFICATE-----", StringSplitOptions.RemoveEmptyEntries);
+                    int subIdx = 0;
+                    foreach (var blk in blocks)
+                    {
+                        int startIdx = blk.IndexOf("-----BEGIN CERTIFICATE-----", StringComparison.Ordinal);
+                        if (startIdx < 0)
+                            continue;
+
+                        string singlePem = blk.Substring(startIdx) + "-----END CERTIFICATE-----";
+                        byte[] pemBytes = System.Text.Encoding.UTF8.GetBytes(singlePem);
+                        try
+                        {
+                            using var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(pemBytes);
+                            int effectiveIndex = bundleIndex >= 0 ? bundleIndex : (blocks.Length > 2 ? subIdx : -1);
+                            items.Add(BuildOsCertificateItemFromX509(name, category, filePath, effectiveIndex, cert));
+                            subIdx++;
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                else
+                {
+                    using var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(rawBytes);
+                    items.Add(BuildOsCertificateItemFromX509(name, category, filePath, bundleIndex, cert));
+                }
+            }
+            catch
+            {
+            }
+
+            return items;
+        }
+
+        private static OsCertificateItem BuildOsCertificateItemFromX509(
+            string name,
+            string category,
+            string filePath,
+            int bundleIndex,
+            System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
+        {
+            bool isCa = false;
+            var sanList = new List<string>();
+
+            foreach (var ext in cert.Extensions)
+            {
+                if (ext is System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension bc)
+                {
+                    isCa = bc.CertificateAuthority;
+                }
+                else if (ext is System.Security.Cryptography.X509Certificates.X509SubjectAlternativeNameExtension san)
+                {
+                    foreach (var dns in san.EnumerateDnsNames())
+                        sanList.Add($"DNS:{dns}");
+                    foreach (var ip in san.EnumerateIPAddresses())
+                        sanList.Add($"IP:{ip}");
+                }
+            }
+
+            bool isSelfSigned = string.Equals(cert.Subject, cert.Issuer, StringComparison.OrdinalIgnoreCase);
+            string kind = isCa
+                ? (isSelfSigned ? "Root CA" : "Intermediate CA")
+                : "Leaf Cert";
+
+            string cn = cert.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.SimpleName, false);
+            if (string.IsNullOrWhiteSpace(cn))
+                cn = cert.Subject;
+
+            string displayName = bundleIndex >= 0 && !string.IsNullOrWhiteSpace(cn)
+                ? cn
+                : name;
+
+            return new OsCertificateItem
+            {
+                Name = displayName,
+                StoreCategory = category,
+                Kind = kind,
+                CommonName = cn,
+                Subject = cert.Subject,
+                Issuer = cert.Issuer,
+                SerialNumber = cert.SerialNumber,
+                Thumbprint = cert.Thumbprint,
+                NotBefore = cert.NotBefore,
+                NotAfter = cert.NotAfter,
+                FilePath = filePath,
+                BundleIndex = bundleIndex,
+                IsCa = isCa,
+                IsSelfSigned = isSelfSigned,
+                SignatureAlgorithm = cert.SignatureAlgorithm.FriendlyName ?? "",
+                KeyAlgorithm = cert.PublicKey.Oid.FriendlyName ?? "",
+                SubjectAlternativeNames = sanList.Count > 0 ? string.Join(", ", sanList) : "-",
+                RawPem = cert.ExportCertificatePem()
+            };
+        }
+
+        public async Task<string> GetOsCertificateDetailsAsync(OsCertificateItem item)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"=== OS SSL/TLS {item.Kind.ToUpperInvariant()} INSPECTION ===");
+            sb.AppendLine($"Name:             {item.Name}");
+            sb.AppendLine($"Store Category:   {item.StoreCategory}");
+            sb.AppendLine($"File Path:        {item.FilePath}{(item.BundleIndex >= 0 ? $" (Bundle Entry #{item.BundleIndex + 1})" : "")}");
+            sb.AppendLine($"Validity Status:  {item.ValidityStatus} ({item.DaysRemainingDisplay})");
+            sb.AppendLine($"Common Name:      {item.CommonName}");
+            sb.AppendLine($"Subject:          {item.Subject}");
+            sb.AppendLine($"Issuer:           {item.Issuer}");
+            sb.AppendLine($"Valid From:       {item.NotBeforeDisplay}");
+            sb.AppendLine($"Valid Until:      {item.NotAfterDisplay}");
+            sb.AppendLine($"Serial Number:    {item.SerialNumber}");
+            sb.AppendLine($"SHA-1 Thumbprint: {item.Thumbprint}");
+
+            if (item.Kind == "CRL")
+            {
+                sb.AppendLine($"Revoked Count:    {item.RevokedCount}");
+                sb.AppendLine();
+
+                string escapedPath = item.FilePath.Replace("'", "'\\''");
+                var crlRes = await _ssh.RunCommandAsync(
+                    $"openssl crl -in '{escapedPath}' -noout -text 2>/dev/null || openssl crl -inform DER -in '{escapedPath}' -noout -text 2>/dev/null",
+                    timeoutSeconds: 30);
+
+                if (crlRes.IsSuccess && !string.IsNullOrWhiteSpace(crlRes.Output))
+                {
+                    sb.AppendLine("--- OpenSSL CRL Full Decode ---");
+                    sb.AppendLine(crlRes.Output.Trim());
+                    sb.AppendLine();
+                }
+
+                if (!string.IsNullOrWhiteSpace(item.RawPem))
+                {
+                    sb.AppendLine("--- PEM Representation ---");
+                    sb.AppendLine(item.RawPem.Trim());
+                }
+
+                return sb.ToString();
+            }
+
+            sb.AppendLine($"CA Certificate:   {(item.IsCa ? (item.IsSelfSigned ? "Yes (Self-Signed Root CA)" : "Yes (Intermediate CA)") : "No (End-Entity / Leaf Certificate)")}");
+            sb.AppendLine($"Signature Alg:    {item.SignatureAlgorithm}");
+            sb.AppendLine($"Public Key Alg:   {item.KeyAlgorithm}");
+            sb.AppendLine($"SANs:             {item.SubjectAlternativeNames}");
+            sb.AppendLine();
+
+            if (!string.IsNullOrWhiteSpace(item.RawPem))
+            {
+                string b64Pem = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(item.RawPem));
+                var osslRes = await _ssh.RunCommandAsync(
+                    $"printf '%s' '{b64Pem}' | base64 -d | openssl x509 -noout -text -certopt no_aux 2>/dev/null",
+                    timeoutSeconds: 20);
+
+                if (osslRes.IsSuccess && !string.IsNullOrWhiteSpace(osslRes.Output))
+                {
+                    sb.AppendLine("--- OpenSSL X.509 Full Certificate Extensions & Decode ---");
+                    sb.AppendLine(osslRes.Output.Trim());
+                    sb.AppendLine();
+                }
+
+                sb.AppendLine("--- PEM Certificate ---");
+                sb.AppendLine(item.RawPem.Trim());
+            }
+
+            return sb.ToString();
+        }
+
+        public async Task<string> VerifyOsCertificateTrustAsync(OsCertificateItem item)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"=== OS LEVEL SSL/TLS TRUST VERIFICATION ===");
+            sb.AppendLine($"Target:    {item.Name} ({item.Kind})");
+            sb.AppendLine($"File Path: {item.FilePath}");
+            sb.AppendLine();
+
+            if (item.Kind == "CRL")
+            {
+                string escapedPath = item.FilePath.Replace("'", "'\\''");
+                var crlVerify = await _ssh.RunCommandAsync(
+                    $"bundle=/etc/pki/tls/certs/ca-bundle.crt; [ ! -f \"$bundle\" ] && bundle=/etc/ssl/certs/ca-certificates.crt; " +
+                    $"openssl crl -in '{escapedPath}' -CAfile \"$bundle\" -noout 2>&1 || openssl crl -inform DER -in '{escapedPath}' -CAfile \"$bundle\" -noout 2>&1");
+
+                sb.AppendLine($"System CA Bundle Verification Output:");
+                sb.AppendLine(!string.IsNullOrWhiteSpace(crlVerify.Output) ? crlVerify.Output.Trim() : crlVerify.Error.Trim());
+                return sb.ToString();
+            }
+
+            if (string.IsNullOrWhiteSpace(item.RawPem))
+            {
+                return "No certificate PEM data available to verify.";
+            }
+
+            string b64Pem = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(item.RawPem));
+            string verifyCmd =
+                $"tmp=/tmp/cert_verify_{Guid.NewGuid():N}.pem; " +
+                $"printf '%s' '{b64Pem}' | base64 -d > \"$tmp\"; " +
+                $"for b in /etc/pki/tls/certs/ca-bundle.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/certs/ca-certificates.crt /var/lib/microshift/certs/ca-bundle/client-bundle.crt /etc/kubernetes/pki/ca.crt; do " +
+                $"  if [ -f \"$b\" ]; then " +
+                $"    echo \"[Trust Store: $b]\"; " +
+                $"    openssl verify -CAfile \"$b\" \"$tmp\" 2>&1; " +
+                $"    echo ''; " +
+                $"  fi; " +
+                $"done; " +
+                $"rm -f \"$tmp\"";
+
+            var res = await _ssh.RunCommandAsync(verifyCmd, timeoutSeconds: 30);
+            sb.AppendLine(res.Output.Trim());
+            if (!string.IsNullOrWhiteSpace(res.Error))
+            {
+                sb.AppendLine(res.Error.Trim());
+            }
+
+            return sb.ToString();
+        }
+
+        public async Task CopyOsCertificateToWindowsAsync(OsCertificateItem item, string localWindowsPath)
+        {
+            if (item.BundleIndex >= 0 && !string.IsNullOrWhiteSpace(item.RawPem))
+            {
+                await System.IO.File.WriteAllTextAsync(localWindowsPath, item.RawPem);
+                return;
+            }
+
+            string escapedFile = item.FilePath.Replace("'", "'\\''");
+            string stageTmp = $"/tmp/os_cert_export_{Guid.NewGuid():N}.tmp";
+            var stageRes = await _ssh.RunCommandAsync($"cp -f -- '{escapedFile}' '{stageTmp}' 2>/dev/null || cp -f '{escapedFile}' '{stageTmp}'");
+            if (stageRes.IsSuccess)
+            {
+                try
+                {
+                    await _ssh.DownloadFileAsync(stageTmp, localWindowsPath);
+                    return;
+                }
+                finally
+                {
+                    await _ssh.RunCommandAsync($"rm -f '{stageTmp}'");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(item.RawPem))
+            {
+                await System.IO.File.WriteAllTextAsync(localWindowsPath, item.RawPem);
+                return;
+            }
+
+            await _ssh.DownloadFileAsync(item.FilePath, localWindowsPath);
+        }
+
+        public async Task<(bool Success, string Message)> InstallOsTrustAnchorAsync(string localWindowsFilePath)
+        {
+            string fileName = System.IO.Path.GetFileName(localWindowsFilePath);
+            string stageTmp = $"/tmp/os_anchor_{Guid.NewGuid():N}_{fileName.Replace("'", "")}";
+
+            await _ssh.UploadFileAsync(localWindowsFilePath, stageTmp);
+
+            string installCmd =
+                $"if [ -d /etc/pki/ca-trust/source/anchors ]; then " +
+                $"  cp -f '{stageTmp}' \"/etc/pki/ca-trust/source/anchors/{fileName.Replace("\"", "")}\" && update-ca-trust extract && echo 'Installed into /etc/pki/ca-trust/source/anchors and executed update-ca-trust extract'; " +
+                $"elif [ -d /usr/local/share/ca-certificates ]; then " +
+                $"  cp -f '{stageTmp}' \"/usr/local/share/ca-certificates/{fileName.Replace("\"", "")}\" && update-ca-certificates && echo 'Installed into /usr/local/share/ca-certificates and executed update-ca-certificates'; " +
+                $"else " +
+                $"  echo 'Unsupported OS CA trust directory layout' >&2; exit 1; " +
+                $"fi; " +
+                $"rm -f '{stageTmp}'";
+
+            var res = await _ssh.RunCommandAsync(installCmd, timeoutSeconds: 60);
+            await _ssh.RunCommandAsync($"rm -f '{stageTmp}'");
+
+            if (res.IsSuccess)
+                return (true, string.IsNullOrWhiteSpace(res.Output) ? "CA certificate installed and OS trust store updated." : res.Output.Trim());
+
+            return (false, string.IsNullOrWhiteSpace(res.Error) ? res.Output.Trim() : res.Error.Trim());
+        }
+
+        public async Task<(bool Success, string Message)> UploadOsCertificateFileAsync(string localWindowsFilePath, string targetDirectoryOnNode)
+        {
+            string fileName = System.IO.Path.GetFileName(localWindowsFilePath);
+            string cleanDir = string.IsNullOrWhiteSpace(targetDirectoryOnNode)
+                ? "/etc/pki/ca-trust/source/anchors"
+                : targetDirectoryOnNode.Trim().TrimEnd('/');
+
+            string destFilePath = $"{cleanDir}/{fileName}";
+            string escapedDest = destFilePath.Replace("'", "'\\''");
+            string escapedDir = cleanDir.Replace("'", "'\\''");
+            string stageTmp = $"/tmp/os_cert_upload_{Guid.NewGuid():N}.tmp";
+
+            await _ssh.UploadFileAsync(localWindowsFilePath, stageTmp);
+
+            string moveCmd =
+                $"mkdir -p -- '{escapedDir}' 2>/dev/null; " +
+                $"cp -f -- '{stageTmp}' '{escapedDest}' 2>/dev/null || cp -f '{stageTmp}' '{escapedDest}'; " +
+                $"rc=$?; rm -f '{stageTmp}'; " +
+                $"if [ $rc -ne 0 ]; then exit $rc; fi; " +
+                $"chmod 644 '{escapedDest}' 2>/dev/null; " +
+                $"if echo '{escapedDest}' | grep -qE '/ca-trust/|/ca-certificates'; then " +
+                $"  (update-ca-trust extract 2>/dev/null || update-ca-certificates 2>/dev/null || true); " +
+                $"fi; " +
+                $"echo \"Uploaded to {destFilePath}\"";
+
+            var res = await _ssh.RunCommandAsync(moveCmd, timeoutSeconds: 60);
+            await _ssh.RunCommandAsync($"rm -f '{stageTmp}'");
+
+            if (res.IsSuccess)
+                return (true, string.IsNullOrWhiteSpace(res.Output) ? $"Uploaded successfully to {destFilePath}" : res.Output.Trim());
+
+            return (false, string.IsNullOrWhiteSpace(res.Error) ? res.Output.Trim() : res.Error.Trim());
+        }
+
+        public async Task<(bool Success, string Message)> ReplaceOsCertificateAsync(OsCertificateItem targetItem, string localWindowsFilePath)
+        {
+            if (targetItem.BundleIndex >= 0 &&
+                (targetItem.FilePath.Contains("tls-ca-bundle.pem", StringComparison.OrdinalIgnoreCase) ||
+                 targetItem.FilePath.Contains("ca-bundle.crt", StringComparison.OrdinalIgnoreCase) ||
+                 targetItem.FilePath.Contains("ca-certificates.crt", StringComparison.OrdinalIgnoreCase)))
+            {
+                return (false, $"'{targetItem.FilePath}' is an auto-generated consolidated system bundle. Replace or add individual certificates in '/etc/pki/ca-trust/source/anchors' instead.");
+            }
+
+            string destFilePath = targetItem.FilePath;
+            string escapedDest = destFilePath.Replace("'", "'\\''");
+            string stageTmp = $"/tmp/os_cert_replace_{Guid.NewGuid():N}.tmp";
+
+            await _ssh.UploadFileAsync(localWindowsFilePath, stageTmp);
+
+            string replaceCmd =
+                $"cp -f -- '{stageTmp}' '{escapedDest}' 2>/dev/null || cp -f '{stageTmp}' '{escapedDest}'; " +
+                $"rc=$?; rm -f '{stageTmp}'; " +
+                $"if [ $rc -ne 0 ]; then exit $rc; fi; " +
+                $"if echo '{escapedDest}' | grep -qE '/ca-trust/|/ca-certificates'; then " +
+                $"  (update-ca-trust extract 2>/dev/null || update-ca-certificates 2>/dev/null || true); " +
+                $"fi; " +
+                $"echo \"Replaced {destFilePath} successfully.\"";
+
+            var res = await _ssh.RunCommandAsync(replaceCmd, timeoutSeconds: 60);
+            await _ssh.RunCommandAsync($"rm -f '{stageTmp}'");
+
+            if (res.IsSuccess)
+                return (true, string.IsNullOrWhiteSpace(res.Output) ? $"Replaced '{destFilePath}' successfully." : res.Output.Trim());
+
+            return (false, string.IsNullOrWhiteSpace(res.Error) ? res.Output.Trim() : res.Error.Trim());
+        }
+
+        public async Task<(bool Success, string Message)> DeleteOsCertificateAsync(OsCertificateItem item)
+        {
+            if (item.BundleIndex >= 0 &&
+                (item.FilePath.Contains("tls-ca-bundle.pem", StringComparison.OrdinalIgnoreCase) ||
+                 item.FilePath.Contains("ca-bundle.crt", StringComparison.OrdinalIgnoreCase) ||
+                 item.FilePath.Contains("ca-certificates.crt", StringComparison.OrdinalIgnoreCase)))
+            {
+                return (false, $"'{item.FilePath}' is a consolidated system CA bundle entry (#{item.BundleIndex + 1}). Delete custom anchors from 'OS Trust Anchors' (/etc/pki/ca-trust/source/anchors) instead.");
+            }
+
+            string escapedTarget = item.FilePath.Replace("'", "'\\''");
+            string deleteCmd =
+                $"rm -f -- '{escapedTarget}' 2>/dev/null || rm -f '{escapedTarget}'; " +
+                $"if [ -e '{escapedTarget}' ]; then echo 'Failed to remove file' >&2; exit 1; fi; " +
+                $"if echo '{escapedTarget}' | grep -qE '/ca-trust/|/ca-certificates'; then " +
+                $"  (update-ca-trust extract 2>/dev/null || update-ca-certificates 2>/dev/null || true); " +
+                $"fi; " +
+                $"echo \"Deleted {item.FilePath}\"";
+
+            var res = await _ssh.RunCommandAsync(deleteCmd, timeoutSeconds: 60);
+            if (res.IsSuccess)
+                return (true, string.IsNullOrWhiteSpace(res.Output) ? $"Deleted '{item.FilePath}' successfully." : res.Output.Trim());
+
+            return (false, string.IsNullOrWhiteSpace(res.Error) ? res.Output.Trim() : res.Error.Trim());
         }
 
         private static string FormatAge(DateTime createdAt)

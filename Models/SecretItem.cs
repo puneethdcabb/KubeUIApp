@@ -12,6 +12,7 @@ namespace KubeUIApp.Models
         public List<string> Keys { get; set; } = new();
         public string AgeDisplay { get; set; } = string.Empty;
         public DateTime? CreatedAt { get; set; }
+        public string CertificateName { get; set; } = string.Empty;
 
         public string KeysDisplay => Keys.Count > 0 ? string.Join(", ", Keys) : "(empty)";
         public string DisplayIcon => Type.Contains("tls", StringComparison.OrdinalIgnoreCase) ? "🔒" : "🔑";

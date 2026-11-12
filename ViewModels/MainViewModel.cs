@@ -55,6 +55,11 @@ namespace KubeUIApp.ViewModels
         private string _ingressRouteSearchText = "";
         private string _containerSearchText = "";
         private string _imageSearchText = "";
+        private string _certSearchText = "";
+        private string _selectedCertScope = "All OS & K8s Stores";
+        private string _selectedCertKindFilter = "All Types";
+        private string _customCertScanPath = "";
+        private string _selectedOsCertDetails = "Select a certificate or CRL from the list to inspect its X.509 / OpenSSL details, trust chain, and PEM payload.";
         private string _currentRemotePath = "/";
         private RemoteFileInfo? _selectedRemoteFile;
 
@@ -90,6 +95,26 @@ namespace KubeUIApp.ViewModels
         public ObservableCollection<IngressRouteItem> IngressRoutes { get; } = new();
         public ObservableCollection<ContainerItem> Containers { get; } = new();
         public ObservableCollection<DockerImageItem> Images { get; } = new();
+        public ObservableCollection<OsCertificateItem> OsCertificates { get; } = new();
+        public ObservableCollection<string> CertScopes { get; } = new()
+        {
+            "All OS & K8s Stores",
+            "OS Trust Anchors",
+            "OS SSL / PKI Certs & CRLs",
+            "Kubernetes / MicroShift PKI",
+            "PVC / Workload PKI",
+            "System CA Bundle (Root CAs)",
+            "Custom Path Only"
+        };
+        public ObservableCollection<string> CertKindFilters { get; } = new()
+        {
+            "All Types",
+            "Root CA",
+            "Intermediate CA",
+            "Leaf Cert",
+            "CRL",
+            "Expired / Expiring Soon"
+        };
         public ObservableCollection<RemoteFileInfo> RemoteFiles { get; } = new();
         public ObservableCollection<CommandLogEntry> CommandLogs { get; } = new();
 
@@ -100,6 +125,7 @@ namespace KubeUIApp.ViewModels
         public ICollectionView FilteredIngressRoutes { get; }
         public ICollectionView FilteredContainers { get; }
         public ICollectionView FilteredImages { get; }
+        public ICollectionView FilteredOsCertificates { get; }
 
         private PodItem? _selectedPod;
         public PodItem? SelectedPod
@@ -155,6 +181,19 @@ namespace KubeUIApp.ViewModels
         {
             get => _selectedImage;
             set => SetField(ref _selectedImage, value);
+        }
+
+        private OsCertificateItem? _selectedOsCertificate;
+        public OsCertificateItem? SelectedOsCertificate
+        {
+            get => _selectedOsCertificate;
+            set
+            {
+                if (SetField(ref _selectedOsCertificate, value))
+                {
+                    _ = LoadSelectedOsCertPreviewAsync(value);
+                }
+            }
         }
 
         // Properties
@@ -380,6 +419,57 @@ namespace KubeUIApp.ViewModels
             }
         }
 
+        public string CertSearchText
+        {
+            get => _certSearchText;
+            set
+            {
+                if (SetField(ref _certSearchText, value))
+                {
+                    FilteredOsCertificates.Refresh();
+                }
+            }
+        }
+
+        public string SelectedCertScope
+        {
+            get => _selectedCertScope;
+            set
+            {
+                if (SetField(ref _selectedCertScope, value))
+                {
+                    if (IsConnected)
+                    {
+                        _ = RefreshOsCertificatesAsync();
+                    }
+                }
+            }
+        }
+
+        public string SelectedCertKindFilter
+        {
+            get => _selectedCertKindFilter;
+            set
+            {
+                if (SetField(ref _selectedCertKindFilter, value))
+                {
+                    FilteredOsCertificates.Refresh();
+                }
+            }
+        }
+
+        public string CustomCertScanPath
+        {
+            get => _customCertScanPath;
+            set => SetField(ref _customCertScanPath, value);
+        }
+
+        public string SelectedOsCertDetails
+        {
+            get => _selectedOsCertDetails;
+            set => SetField(ref _selectedOsCertDetails, value);
+        }
+
         public string CurrentRemotePath
         {
             get => _currentRemotePath;
@@ -427,6 +517,10 @@ namespace KubeUIApp.ViewModels
         public int TotalRoutesCount => IngressRoutes.Count;
         public int TotalContainersCount => Containers.Count;
         public int TotalImagesCount => Images.Count;
+        public int TotalOsCertsCount => OsCertificates.Count;
+        public int ValidOsCertsCount => OsCertificates.Count(c => c.ValidityStatus == "Valid");
+        public int ExpiringOrExpiredOsCertsCount => OsCertificates.Count(c => c.ValidityStatus == "Expired" || c.ValidityStatus == "Expiring Soon");
+        public int TotalOsCrlsCount => OsCertificates.Count(c => c.Kind == "CRL");
 
         // Commands
         public ICommand ConnectCommand { get; }
@@ -484,6 +578,7 @@ namespace KubeUIApp.ViewModels
         public ICommand EditSecretYamlCommand { get; }
         public ICommand CopySecretYamlCommand { get; }
         public ICommand DescribeSecretCommand { get; }
+        public ICommand ForceResyncSecretCommand { get; }
         public ICommand DeleteSecretCommand { get; }
 
         // Container Commands
@@ -498,6 +593,16 @@ namespace KubeUIApp.ViewModels
         public ICommand RefreshImagesCommand { get; }
         public ICommand DeleteImageCommand { get; }
         public ICommand PullImageCommand { get; }
+
+        // OS SSL/TLS Certificate & CRL Commands
+        public ICommand RefreshOsCertificatesCommand { get; }
+        public ICommand InspectOsCertificateCommand { get; }
+        public ICommand VerifyOsCertificateTrustCommand { get; }
+        public ICommand ExportOsCertificateCommand { get; }
+        public ICommand InstallOsCaCertCommand { get; }
+        public ICommand UploadOsCertificateCommand { get; }
+        public ICommand ReplaceOsCertificateCommand { get; }
+        public ICommand DeleteOsCertificateCommand { get; }
 
         // Remote Files Commands
         public ICommand RefreshFilesCommand { get; }
@@ -615,6 +720,35 @@ namespace KubeUIApp.ViewModels
                        img.Id.Contains(_imageSearchText, StringComparison.OrdinalIgnoreCase);
             };
 
+            FilteredOsCertificates = CollectionViewSource.GetDefaultView(OsCertificates);
+            FilteredOsCertificates.Filter = obj =>
+            {
+                if (obj is not OsCertificateItem cert) return false;
+
+                if (!string.IsNullOrWhiteSpace(_selectedCertKindFilter) && _selectedCertKindFilter != "All Types")
+                {
+                    if (_selectedCertKindFilter == "Expired / Expiring Soon")
+                    {
+                        if (cert.ValidityStatus != "Expired" && cert.ValidityStatus != "Expiring Soon")
+                            return false;
+                    }
+                    else if (!string.Equals(cert.Kind, _selectedCertKindFilter, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(_certSearchText)) return true;
+                return cert.Name.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase) ||
+                       cert.CommonName.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase) ||
+                       cert.Subject.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase) ||
+                       cert.Issuer.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase) ||
+                       cert.FilePath.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase) ||
+                       cert.Thumbprint.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase) ||
+                       cert.SerialNumber.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase) ||
+                       cert.StoreCategory.Contains(_certSearchText, StringComparison.OrdinalIgnoreCase);
+            };
+
             // Initialize commands
             ConnectCommand = new AsyncRelayCommand(ConnectAsync);
             DisconnectCommand = new RelayCommand(Disconnect);
@@ -666,6 +800,7 @@ namespace KubeUIApp.ViewModels
             EditSecretYamlCommand = new AsyncRelayCommand(EditSecretYamlAsync);
             CopySecretYamlCommand = new AsyncRelayCommand(CopySecretYamlAsync);
             DescribeSecretCommand = new AsyncRelayCommand(DescribeSecretAsync);
+            ForceResyncSecretCommand = new AsyncRelayCommand(ForceResyncSecretAsync);
             DeleteSecretCommand = new AsyncRelayCommand(DeleteSecretAsync);
 
             RefreshContainersCommand = new AsyncRelayCommand(RefreshContainersAsync);
@@ -678,6 +813,15 @@ namespace KubeUIApp.ViewModels
             RefreshImagesCommand = new AsyncRelayCommand(RefreshImagesAsync);
             DeleteImageCommand = new AsyncRelayCommand(DeleteImageAsync);
             PullImageCommand = new AsyncRelayCommand(PullImageAsync);
+
+            RefreshOsCertificatesCommand = new AsyncRelayCommand(RefreshOsCertificatesAsync);
+            InspectOsCertificateCommand = new AsyncRelayCommand(InspectOsCertificateModalAsync);
+            VerifyOsCertificateTrustCommand = new AsyncRelayCommand(VerifyOsCertificateTrustAsync);
+            ExportOsCertificateCommand = new AsyncRelayCommand(ExportOsCertificateAsync);
+            InstallOsCaCertCommand = new AsyncRelayCommand(InstallOsCaCertAsync);
+            UploadOsCertificateCommand = new AsyncRelayCommand(UploadOsCertificateAsync);
+            ReplaceOsCertificateCommand = new AsyncRelayCommand(ReplaceOsCertificateAsync);
+            DeleteOsCertificateCommand = new AsyncRelayCommand(DeleteOsCertificateAsync);
 
             RefreshFilesCommand = new AsyncRelayCommand(RefreshFilesAsync);
             OpenRemoteItemCommand = new AsyncRelayCommand(OpenRemoteItemAsync);
@@ -813,6 +957,7 @@ namespace KubeUIApp.ViewModels
             IngressRoutes.Clear();
             Containers.Clear();
             Images.Clear();
+            OsCertificates.Clear();
             RemoteFiles.Clear();
             Namespaces.Clear();
             NodeStats = new NodeStats();
@@ -861,9 +1006,10 @@ namespace KubeUIApp.ViewModels
                 var routerStatusTask = _clusterService.GetRouterStatusAsync();
                 var containersTask = _clusterService.GetContainersAsync(true);
                 var imagesTask = _clusterService.GetImagesAsync();
+                var osCertsTask = _clusterService.GetOsCertificatesAsync(SelectedCertScope, CustomCertScanPath);
                 var filesTask = _sshService.ListDirectoryAsync(CurrentRemotePath);
 
-                await Task.WhenAll(statsTask, podsTask, depsTask, pvcsTask, secretsTask, routesTask, routerStatusTask, containersTask, imagesTask, filesTask);
+                await Task.WhenAll(statsTask, podsTask, depsTask, pvcsTask, secretsTask, routesTask, routerStatusTask, containersTask, imagesTask, osCertsTask, filesTask);
 
                 NodeStats = await statsTask;
                 RouterStatus = await routerStatusTask;
@@ -888,6 +1034,9 @@ namespace KubeUIApp.ViewModels
 
                 Images.Clear();
                 foreach (var img in await imagesTask) Images.Add(img);
+
+                OsCertificates.Clear();
+                foreach (var cert in await osCertsTask) OsCertificates.Add(cert);
 
                 RemoteFiles.Clear();
                 foreach (var f in await filesTask) RemoteFiles.Add(f);
@@ -959,6 +1108,10 @@ namespace KubeUIApp.ViewModels
             OnPropertyChanged(nameof(TotalRoutesCount));
             OnPropertyChanged(nameof(TotalContainersCount));
             OnPropertyChanged(nameof(TotalImagesCount));
+            OnPropertyChanged(nameof(TotalOsCertsCount));
+            OnPropertyChanged(nameof(ValidOsCertsCount));
+            OnPropertyChanged(nameof(ExpiringOrExpiredOsCertsCount));
+            OnPropertyChanged(nameof(TotalOsCrlsCount));
         }
 
         // Pod Actions
@@ -1633,6 +1786,57 @@ namespace KubeUIApp.ViewModels
             finally { IsBusy = false; }
         }
 
+        private async Task ForceResyncSecretAsync()
+        {
+            if (SelectedSecret == null) return;
+            var secret = SelectedSecret;
+            string certTarget = !string.IsNullOrWhiteSpace(secret.CertificateName) ? secret.CertificateName : secret.Name;
+
+            var dlg = new ConfirmDialog(
+                "Force Re-Sync Certificate / Secret",
+                $"Perform full cert-manager CA re-sync for Secret '{secret.Name}' (Certificate '{certTarget}') in namespace '{secret.Namespace}'?\n\n" +
+                $"Steps to execute:\n" +
+                $"1. Compare ca.crt SHA-256 fingerprint in '{secret.Name}' vs live CA secret\n" +
+                $"2. Delete stale Secret '{secret.Name}' so cert-manager auto-recreates it from the current Issuer/CA\n" +
+                $"3. Confirm cert-manager recreated '{secret.Name}' with matching ca.crt fingerprint\n" +
+                $"4. Rollout-restart any Deployments / StatefulSets in '{secret.Namespace}' mounting '{secret.Name}'",
+                confirmButtonText: "Force Re-Sync")
+            {
+                Owner = Application.Current.MainWindow
+            };
+
+            if (dlg.ShowDialog() == true && dlg.IsConfirmed)
+            {
+                IsBusy = true;
+                BusyText = $"Re-syncing '{secret.Name}' (verifying CA, recreating Secret via cert-manager & restarting workloads)...";
+                try
+                {
+                    var (ok, msg) = await _clusterService.ForceResyncSecretCertificateAsync(secret);
+                    await RefreshSecretsAsync();
+                    await RefreshPodsAsync();
+
+                    var reportViewer = new FileViewerDialog(
+                        $"{secret.Namespace}/{secret.Name} - Force Re-Sync Report",
+                        msg)
+                    {
+                        Owner = Application.Current.MainWindow,
+                        Title = ok
+                            ? $"Force Re-Sync Completed - {secret.Name}"
+                            : $"Force Re-Sync Issue - {secret.Name}"
+                    };
+                    reportViewer.ShowDialog();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Error forcing secret re-sync: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                finally
+                {
+                    IsBusy = false;
+                }
+            }
+        }
+
         private async Task DeleteSecretAsync()
         {
             if (SelectedSecret == null) return;
@@ -2055,6 +2259,405 @@ namespace KubeUIApp.ViewModels
                 }
                 finally { IsBusy = false; }
             }
+        }
+
+        // ================= OS SSL/TLS CERTIFICATES & CRLS ACTIONS =================
+
+        public async Task RefreshOsCertificatesAsync()
+        {
+            if (!IsConnected) return;
+            IsBusy = true;
+            BusyText = $"Scanning OS SSL/TLS certificates & CRLs ({SelectedCertScope})...";
+            try
+            {
+                var list = await _clusterService.GetOsCertificatesAsync(SelectedCertScope, CustomCertScanPath);
+                OsCertificates.Clear();
+                foreach (var c in list)
+                {
+                    OsCertificates.Add(c);
+                }
+                NotifyStatsChanged();
+                if (OsCertificates.Count > 0 && SelectedOsCertificate == null)
+                {
+                    SelectedOsCertificate = OsCertificates[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.LogError("MainViewModel.RefreshOsCertificatesAsync", "Failed to scan OS SSL/TLS certificates.", ex);
+                MessageBox.Show($"Failed to scan OS certificates: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        private async Task LoadSelectedOsCertPreviewAsync(OsCertificateItem? item)
+        {
+            if (item == null)
+            {
+                SelectedOsCertDetails = "Select a certificate or CRL from the list to inspect its X.509 / OpenSSL details, trust chain, and PEM payload.";
+                return;
+            }
+
+            SelectedOsCertDetails = $"Loading full X.509 / OpenSSL decode for '{item.Name}'...";
+            try
+            {
+                string details = await _clusterService.GetOsCertificateDetailsAsync(item);
+                if (ReferenceEquals(SelectedOsCertificate, item))
+                {
+                    SelectedOsCertDetails = details;
+                }
+            }
+            catch (Exception ex)
+            {
+                SelectedOsCertDetails = $"Error loading certificate details: {ex.Message}";
+            }
+        }
+
+        public async Task InspectOsCertificateModalAsync()
+        {
+            if (SelectedOsCertificate == null) return;
+            var item = SelectedOsCertificate;
+
+            IsBusy = true;
+            BusyText = $"Inspecting {item.Name}...";
+            try
+            {
+                string content = await _clusterService.GetOsCertificateDetailsAsync(item);
+                SelectedOsCertDetails = content;
+                var viewer = new FileViewerDialog(
+                    item.FilePath,
+                    content,
+                    async destWindowsPath => await _clusterService.CopyOsCertificateToWindowsAsync(item, destWindowsPath))
+                {
+                    Owner = Application.Current.MainWindow,
+                    Title = $"SSL/TLS Inspector - {item.Name} ({item.Kind})"
+                };
+                viewer.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to inspect certificate: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        private async Task VerifyOsCertificateTrustAsync()
+        {
+            if (SelectedOsCertificate == null) return;
+            var item = SelectedOsCertificate;
+
+            IsBusy = true;
+            BusyText = $"Verifying OS trust chain for '{item.Name}'...";
+            try
+            {
+                string report = await _clusterService.VerifyOsCertificateTrustAsync(item);
+                SelectedOsCertDetails = report + "\n\n" + SelectedOsCertDetails;
+                var viewer = new FileViewerDialog(item.FilePath, report)
+                {
+                    Owner = Application.Current.MainWindow,
+                    Title = $"OS Trust Verification - {item.Name}"
+                };
+                viewer.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Verification failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                IsBusy = false;
+            }
+        }
+
+        private async Task ExportOsCertificateAsync()
+        {
+            if (SelectedOsCertificate == null) return;
+            var item = SelectedOsCertificate;
+
+            string defaultFileName = item.BundleIndex >= 0
+                ? $"{SanitizeWindowsFileName(item.CommonName)}.crt"
+                : System.IO.Path.GetFileName(item.FilePath);
+
+            var sfd = new SaveFileDialog
+            {
+                Title = $"Export {item.Kind} to Windows",
+                FileName = defaultFileName,
+                Filter = "Certificate & CRL Files (*.crt;*.cer;*.pem;*.der;*.crl)|*.crt;*.cer;*.pem;*.der;*.crl|All Files (*.*)|*.*"
+            };
+
+            if (sfd.ShowDialog() == true)
+            {
+                IsBusy = true;
+                BusyText = $"Exporting '{item.Name}' to Windows...";
+                try
+                {
+                    await _clusterService.CopyOsCertificateToWindowsAsync(item, sfd.FileName);
+                    MessageBox.Show($"Exported successfully to:\n{sfd.FileName}", "Export Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Export failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                finally
+                {
+                    IsBusy = false;
+                }
+            }
+        }
+
+        private async Task InstallOsCaCertAsync()
+        {
+            if (!IsConnected) return;
+
+            var ofd = new OpenFileDialog
+            {
+                Title = "Select CA Certificate (.crt / .pem / .cer) to Install into Node OS Trust Anchors",
+                Filter = "Certificate Files (*.crt;*.pem;*.cer)|*.crt;*.pem;*.cer|All Files (*.*)|*.*"
+            };
+
+            if (ofd.ShowDialog() == true)
+            {
+                var confirm = new ConfirmDialog(
+                    "Install OS CA Trust Anchor",
+                    $"Install '{System.IO.Path.GetFileName(ofd.FileName)}' into the node's OS system trust anchors and run update-ca-trust?",
+                    confirmButtonText: "Install & Update Trust")
+                {
+                    Owner = Application.Current.MainWindow
+                };
+
+                if (confirm.ShowDialog() == true && confirm.IsConfirmed)
+                {
+                    IsBusy = true;
+                    BusyText = $"Installing CA anchor '{System.IO.Path.GetFileName(ofd.FileName)}' and updating OS trust store...";
+                    try
+                    {
+                        var (ok, msg) = await _clusterService.InstallOsTrustAnchorAsync(ofd.FileName);
+                        if (ok)
+                        {
+                            MessageBox.Show(msg, "OS Trust Updated", MessageBoxButton.OK, MessageBoxImage.Information);
+                            await RefreshOsCertificatesAsync();
+                        }
+                        else
+                        {
+                            MessageBox.Show($"Failed to install OS trust anchor:\n{msg}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Error installing trust anchor: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                    finally
+                    {
+                        IsBusy = false;
+                    }
+                }
+            }
+        }
+
+        private async Task UploadOsCertificateAsync()
+        {
+            if (!IsConnected) return;
+
+            string defaultTargetDir = "/etc/pki/ca-trust/source/anchors";
+            if (!string.IsNullOrWhiteSpace(CustomCertScanPath))
+            {
+                defaultTargetDir = CustomCertScanPath.Trim();
+            }
+            else if (SelectedOsCertificate != null && !string.IsNullOrWhiteSpace(SelectedOsCertificate.FilePath))
+            {
+                int lastSlash = SelectedOsCertificate.FilePath.LastIndexOf('/');
+                if (lastSlash > 0)
+                {
+                    defaultTargetDir = SelectedOsCertificate.FilePath.Substring(0, lastSlash);
+                }
+            }
+            else if (SelectedCertScope == "OS SSL / PKI Certs & CRLs")
+            {
+                defaultTargetDir = "/etc/pki/tls/certs";
+            }
+            else if (SelectedCertScope == "Kubernetes / MicroShift PKI")
+            {
+                defaultTargetDir = "/var/lib/microshift/certs";
+            }
+
+            var ofd = new OpenFileDialog
+            {
+                Title = $"Select Certificate or CRL (.crt / .cer / .pem / .der / .crl) to Upload to {defaultTargetDir}",
+                Filter = "Certificate & CRL Files (*.crt;*.cer;*.pem;*.der;*.crl)|*.crt;*.cer;*.pem;*.der;*.crl|All Files (*.*)|*.*"
+            };
+
+            if (ofd.ShowDialog() == true)
+            {
+                string fileName = System.IO.Path.GetFileName(ofd.FileName);
+                var confirm = new ConfirmDialog(
+                    "Upload OS Certificate / CRL",
+                    $"Upload '{fileName}' to '{defaultTargetDir}/{fileName}' on the node?",
+                    confirmButtonText: "Upload File")
+                {
+                    Owner = Application.Current.MainWindow
+                };
+
+                if (confirm.ShowDialog() == true && confirm.IsConfirmed)
+                {
+                    IsBusy = true;
+                    BusyText = $"Uploading '{fileName}' to '{defaultTargetDir}'...";
+                    try
+                    {
+                        var (ok, msg) = await _clusterService.UploadOsCertificateFileAsync(ofd.FileName, defaultTargetDir);
+                        if (ok)
+                        {
+                            MessageBox.Show(msg, "Upload Complete", MessageBoxButton.OK, MessageBoxImage.Information);
+                            await RefreshOsCertificatesAsync();
+                        }
+                        else
+                        {
+                            MessageBox.Show($"Upload failed:\n{msg}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Upload error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                    finally
+                    {
+                        IsBusy = false;
+                    }
+                }
+            }
+        }
+
+        private async Task ReplaceOsCertificateAsync()
+        {
+            if (!IsConnected || SelectedOsCertificate == null) return;
+            var item = SelectedOsCertificate;
+
+            if (item.BundleIndex >= 0 &&
+                (item.FilePath.Contains("tls-ca-bundle.pem", StringComparison.OrdinalIgnoreCase) ||
+                 item.FilePath.Contains("ca-bundle.crt", StringComparison.OrdinalIgnoreCase) ||
+                 item.FilePath.Contains("ca-certificates.crt", StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show(
+                    $"'{item.FilePath}' is an auto-generated consolidated system CA bundle.\n\nTo add or replace a trusted CA, select an entry under 'OS Trust Anchors' (/etc/pki/ca-trust/source/anchors) or use 'Install CA Trust Anchor...'.",
+                    "System Bundle Entry",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            var ofd = new OpenFileDialog
+            {
+                Title = $"Select Replacement File for {item.FilePath}",
+                Filter = "Certificate & CRL Files (*.crt;*.cer;*.pem;*.der;*.crl)|*.crt;*.cer;*.pem;*.der;*.crl|All Files (*.*)|*.*"
+            };
+
+            if (ofd.ShowDialog() == true)
+            {
+                var confirm = new ConfirmDialog(
+                    "Replace OS Certificate / CRL",
+                    $"Are you sure you want to overwrite:\n{item.FilePath}\n\nwith local file:\n{ofd.FileName}?",
+                    confirmButtonText: "Replace File")
+                {
+                    Owner = Application.Current.MainWindow
+                };
+
+                if (confirm.ShowDialog() == true && confirm.IsConfirmed)
+                {
+                    IsBusy = true;
+                    BusyText = $"Replacing '{item.FilePath}'...";
+                    try
+                    {
+                        var (ok, msg) = await _clusterService.ReplaceOsCertificateAsync(item, ofd.FileName);
+                        if (ok)
+                        {
+                            MessageBox.Show(msg, "Replaced Successfully", MessageBoxButton.OK, MessageBoxImage.Information);
+                            await RefreshOsCertificatesAsync();
+                        }
+                        else
+                        {
+                            MessageBox.Show($"Failed to replace file:\n{msg}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Replace error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                    finally
+                    {
+                        IsBusy = false;
+                    }
+                }
+            }
+        }
+
+        private async Task DeleteOsCertificateAsync()
+        {
+            if (!IsConnected || SelectedOsCertificate == null) return;
+            var item = SelectedOsCertificate;
+
+            if (item.BundleIndex >= 0 &&
+                (item.FilePath.Contains("tls-ca-bundle.pem", StringComparison.OrdinalIgnoreCase) ||
+                 item.FilePath.Contains("ca-bundle.crt", StringComparison.OrdinalIgnoreCase) ||
+                 item.FilePath.Contains("ca-certificates.crt", StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show(
+                    $"'{item.Name}' is an entry inside the consolidated system CA bundle ({item.FilePath}).\n\nIndividual entries inside the system bundle cannot be deleted directly. Switch scope to 'OS Trust Anchors' to delete custom anchor files.",
+                    "Cannot Delete System Bundle Entry",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var confirm = new ConfirmDialog(
+                $"Delete OS {item.Kind}",
+                $"Are you sure you want to permanently delete:\n{item.FilePath}\n\n({item.Name}) from the node?",
+                confirmButtonText: "Delete")
+            {
+                Owner = Application.Current.MainWindow
+            };
+
+            if (confirm.ShowDialog() == true && confirm.IsConfirmed)
+            {
+                IsBusy = true;
+                BusyText = $"Deleting '{item.FilePath}'...";
+                try
+                {
+                    var (ok, msg) = await _clusterService.DeleteOsCertificateAsync(item);
+                    if (ok)
+                    {
+                        MessageBox.Show(msg, "Deleted", MessageBoxButton.OK, MessageBoxImage.Information);
+                        await RefreshOsCertificatesAsync();
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Failed to delete file:\n{msg}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Delete error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                finally
+                {
+                    IsBusy = false;
+                }
+            }
+        }
+
+        private static string SanitizeWindowsFileName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return "certificate";
+            foreach (char c in System.IO.Path.GetInvalidFileNameChars())
+            {
+                name = name.Replace(c, '_');
+            }
+            return name.Trim();
         }
 
         // Custom Behind-the-Scenes Command runner

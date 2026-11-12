@@ -73,6 +73,7 @@ namespace KubeUIApp.Services
         Task<string> DescribeSecretAsync(string name, string ns);
         Task<List<SecretDataEntry>> GetSecretDataEntriesAsync(string name, string ns);
         Task<bool> DeleteSecretAsync(string name, string ns);
+        Task<(bool Success, string Message)> ForceResyncSecretCertificateAsync(SecretItem secret);
 
         // Ingress & OpenShift Routes
         Task<List<IngressRouteItem>> GetIngressRoutesAsync(string? namespaceName = null);
@@ -91,5 +92,15 @@ namespace KubeUIApp.Services
         Task<List<DockerImageItem>> GetImagesAsync();
         Task<bool> DeleteImageAsync(string imageIdOrName, bool force = false);
         Task<bool> PullImageAsync(string imageName);
+
+        // OS Level SSL/TLS Certificates, CA Trust & CRLs
+        Task<List<OsCertificateItem>> GetOsCertificatesAsync(string scopeFilter = "All OS & K8s Stores", string? customPath = null);
+        Task<string> GetOsCertificateDetailsAsync(OsCertificateItem item);
+        Task<string> VerifyOsCertificateTrustAsync(OsCertificateItem item);
+        Task CopyOsCertificateToWindowsAsync(OsCertificateItem item, string localWindowsPath);
+        Task<(bool Success, string Message)> InstallOsTrustAnchorAsync(string localWindowsFilePath);
+        Task<(bool Success, string Message)> UploadOsCertificateFileAsync(string localWindowsFilePath, string targetDirectoryOnNode);
+        Task<(bool Success, string Message)> ReplaceOsCertificateAsync(OsCertificateItem targetItem, string localWindowsFilePath);
+        Task<(bool Success, string Message)> DeleteOsCertificateAsync(OsCertificateItem item);
     }
 }
