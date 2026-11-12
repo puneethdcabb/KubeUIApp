@@ -1372,37 +1372,35 @@ namespace KubeUIApp.Services
                 return "[Empty File (0 bytes)]";
             }
 
+            string fileName = System.IO.Path.GetFileName(filePath);
             string ext = System.IO.Path.GetExtension(filePath).ToLowerInvariant();
-            if (ext == ".der" || ext == ".cer")
+            string utf8Try = "";
+            try
             {
-                try
+                utf8Try = System.Text.Encoding.UTF8.GetString(bytes);
+            }
+            catch
+            {
+            }
+
+            if (ext == ".der" || ext == ".cer" || ext == ".crt" || ext == ".pem" || utf8Try.Contains("-----BEGIN CERTIFICATE-----"))
+            {
+                string enrichedCert = TryFormatSecretCertificateDetails(fileName, bytes, utf8Try);
+                if (!string.IsNullOrEmpty(enrichedCert))
                 {
-                    using var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(bytes);
-                    var sb = new System.Text.StringBuilder();
-                    sb.AppendLine("=== X.509 Certificate (.der) ===");
-                    sb.AppendLine($"Subject:      {cert.Subject}");
-                    sb.AppendLine($"Issuer:       {cert.Issuer}");
-                    sb.AppendLine($"Not Before:   {cert.NotBefore:yyyy-MM-dd HH:mm:ss UTC}");
-                    sb.AppendLine($"Not After:    {cert.NotAfter:yyyy-MM-dd HH:mm:ss UTC}");
-                    sb.AppendLine($"Thumbprint:   {cert.Thumbprint}");
-                    sb.AppendLine($"Serial Num:   {cert.SerialNumber}");
-                    sb.AppendLine();
-                    sb.AppendLine("=== PEM Encoded Format ===");
-                    sb.AppendLine("-----BEGIN CERTIFICATE-----");
-                    sb.AppendLine(Convert.ToBase64String(bytes, Base64FormattingOptions.InsertLineBreaks));
-                    sb.AppendLine("-----END CERTIFICATE-----");
-                    return sb.ToString();
+                    return enrichedCert;
                 }
-                catch
-                {
-                    // Fall back to PEM or Base64 representation
-                }
+            }
+            else if (ext == ".key" || utf8Try.Contains("PRIVATE KEY"))
+            {
+                return FormatSecretPrivateKeyDetails(fileName, bytes, utf8Try);
             }
             else if (ext == ".crl")
             {
                 var sb = new System.Text.StringBuilder();
-                sb.AppendLine("=== Certificate Revocation List (.crl) ===");
+                sb.AppendLine($"=== Certificate Revocation List ({fileName}) ===");
                 sb.AppendLine($"Raw Size: {bytes.Length} bytes");
+                sb.AppendLine($"SHA-256:  {Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))}");
                 sb.AppendLine();
                 sb.AppendLine("=== PEM Encoded Format ===");
                 sb.AppendLine("-----BEGIN X509 CRL-----");
@@ -1775,17 +1773,31 @@ namespace KubeUIApp.Services
 
                         string detectedType = "Base64 Data";
                         string keyLower = prop.Name.ToLowerInvariant();
-                        if (keyLower.EndsWith(".crt") || keyLower.EndsWith(".cer") || decoded.Contains("BEGIN CERTIFICATE"))
+                        bool isCertCandidate = keyLower.EndsWith(".crt") || keyLower.EndsWith(".cer") || keyLower.EndsWith(".der") || keyLower.EndsWith(".pem") || decoded.Contains("BEGIN CERTIFICATE");
+                        bool isCrlCandidate = keyLower.EndsWith(".crl") || decoded.Contains("BEGIN X509 CRL") || decoded.Contains("BEGIN CERTIFICATE REVOCATION LIST");
+                        bool isKeyCandidate = keyLower.EndsWith(".key") || decoded.Contains("PRIVATE KEY");
+
+                        if (isCertCandidate && !isKeyCandidate && !isCrlCandidate)
                         {
-                            detectedType = "X.509 Certificate (PEM)";
+                            detectedType = keyLower == "ca.crt"
+                                ? "CA Certificate (X.509)"
+                                : (keyLower.EndsWith(".der") ? "X.509 Certificate (DER)" : "X.509 Certificate");
+
+                            string enrichedCert = TryFormatSecretCertificateDetails(prop.Name, rawBytes, decoded);
+                            if (!string.IsNullOrEmpty(enrichedCert))
+                            {
+                                decoded = enrichedCert;
+                            }
                         }
-                        else if (keyLower.EndsWith(".crl") || decoded.Contains("BEGIN X509 CRL") || decoded.Contains("BEGIN CERTIFICATE REVOCATION LIST"))
+                        else if (isCrlCandidate)
                         {
                             detectedType = "Certificate Revocation List (CRL)";
+                            decoded = await FormatSecretCrlDetailsAsync(prop.Name, rawBytes, decoded);
                         }
-                        else if (keyLower.EndsWith(".key") || decoded.Contains("PRIVATE KEY"))
+                        else if (isKeyCandidate)
                         {
                             detectedType = "Private Key";
+                            decoded = FormatSecretPrivateKeyDetails(prop.Name, rawBytes, decoded);
                         }
                         else if (keyLower.EndsWith(".json") || (decoded.TrimStart().StartsWith("{") && decoded.TrimEnd().EndsWith("}")))
                         {
@@ -1795,13 +1807,19 @@ namespace KubeUIApp.Services
                         {
                             detectedType = "Bearer Token";
                         }
-                        else if (keyLower == "ca.crt")
-                        {
-                            detectedType = "CA Certificate (Root/Intermediate)";
-                        }
                         else if (!decoded.Contains('\0') && decoded.Length > 0 && !decoded.StartsWith("(Binary"))
                         {
                             detectedType = "UTF-8 Text";
+                        }
+                        else if (rawBytes.Length > 0)
+                        {
+                            // Check if binary payload is actually a DER certificate
+                            string enrichedDer = TryFormatSecretCertificateDetails(prop.Name, rawBytes, "");
+                            if (!string.IsNullOrEmpty(enrichedDer))
+                            {
+                                detectedType = "X.509 Certificate (DER)";
+                                decoded = enrichedDer;
+                            }
                         }
 
                         list.Add(new SecretDataEntry
@@ -1820,6 +1838,240 @@ namespace KubeUIApp.Services
             }
 
             return list;
+        }
+
+        private static string TryFormatSecretCertificateDetails(string keyName, byte[] rawBytes, string decodedText)
+        {
+            if (rawBytes == null || rawBytes.Length == 0)
+                return string.Empty;
+
+            var certs = new List<System.Security.Cryptography.X509Certificates.X509Certificate2>();
+            try
+            {
+                if (!string.IsNullOrEmpty(decodedText) && decodedText.Contains("-----BEGIN CERTIFICATE-----"))
+                {
+                    var blocks = decodedText.Split("-----END CERTIFICATE-----", StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var blk in blocks)
+                    {
+                        int idx = blk.IndexOf("-----BEGIN CERTIFICATE-----", StringComparison.Ordinal);
+                        if (idx >= 0)
+                        {
+                            string pem = blk.Substring(idx) + "-----END CERTIFICATE-----";
+                            try
+                            {
+                                certs.Add(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(
+                                    System.Text.Encoding.UTF8.GetBytes(pem)));
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    }
+                }
+
+                if (certs.Count == 0)
+                {
+                    certs.Add(System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(rawBytes));
+                }
+
+                var sb = new System.Text.StringBuilder();
+                for (int i = 0; i < certs.Count; i++)
+                {
+                    using var cert = certs[i];
+                    bool isCa = false;
+                    var sanEntries = new List<string>();
+                    var keyUsages = new List<string>();
+
+                    foreach (var ext in cert.Extensions)
+                    {
+                        if (ext is System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension bc)
+                        {
+                            isCa = bc.CertificateAuthority;
+                        }
+                        else if (ext is System.Security.Cryptography.X509Certificates.X509SubjectAlternativeNameExtension san)
+                        {
+                            foreach (var d in san.EnumerateDnsNames()) sanEntries.Add($"DNS:{d}");
+                            foreach (var ip in san.EnumerateIPAddresses()) sanEntries.Add($"IP:{ip}");
+                        }
+                        else if (ext is System.Security.Cryptography.X509Certificates.X509KeyUsageExtension ku)
+                        {
+                            keyUsages.Add(ku.KeyUsages.ToString());
+                        }
+                    }
+
+                    bool isSelfSigned = string.Equals(cert.Subject, cert.Issuer, StringComparison.OrdinalIgnoreCase);
+                    string role = isCa
+                        ? (isSelfSigned ? "Root CA Certificate (Self-Signed)" : "Intermediate CA Certificate")
+                        : "Leaf / End-Entity Certificate";
+
+                    var now = DateTime.UtcNow;
+                    var notBeforeUtc = cert.NotBefore.ToUniversalTime();
+                    var notAfterUtc = cert.NotAfter.ToUniversalTime();
+                    var remaining = notAfterUtc - now;
+                    string statusText = now < notBeforeUtc
+                        ? "⏳ NOT YET VALID"
+                        : (now > notAfterUtc
+                            ? $"❌ EXPIRED ({Math.Abs((int)remaining.TotalDays)} days ago)"
+                            : (remaining.TotalDays <= 30
+                                ? $"⚠️ EXPIRING SOON ({(int)remaining.TotalDays} days left)"
+                                : $"✅ VALID ({(int)remaining.TotalDays} days remaining)"));
+
+                    string sha256Fp = Convert.ToHexString(cert.GetCertHash(System.Security.Cryptography.HashAlgorithmName.SHA256));
+                    string formattedSha256 = string.Join(":", Enumerable.Range(0, sha256Fp.Length / 2).Select(j => sha256Fp.Substring(j * 2, 2)));
+
+                    string headerTitle = certs.Count > 1
+                        ? $"=== X.509 CERTIFICATE #{i + 1} OF {certs.Count} ({keyName}) ==="
+                        : $"=== X.509 CERTIFICATE DETAILS ({keyName}) ===";
+
+                    sb.AppendLine(headerTitle);
+                    sb.AppendLine($"Certificate Type:   {role}");
+                    sb.AppendLine($"Validity Status:    {statusText}");
+                    sb.AppendLine($"Subject:            {cert.Subject}");
+                    sb.AppendLine($"Issuer:             {cert.Issuer}");
+                    sb.AppendLine($"Valid From (UTC):   {notBeforeUtc:yyyy-MM-dd HH:mm:ss} UTC");
+                    sb.AppendLine($"Valid To (UTC):     {notAfterUtc:yyyy-MM-dd HH:mm:ss} UTC");
+                    sb.AppendLine($"Serial Number:      {cert.SerialNumber}");
+                    sb.AppendLine($"SHA-256 Thumbprint: {formattedSha256}");
+                    sb.AppendLine($"SHA-1 Thumbprint:   {cert.Thumbprint}");
+                    sb.AppendLine($"Signature Alg:      {cert.SignatureAlgorithm.FriendlyName}");
+                    sb.AppendLine($"Public Key:         {cert.PublicKey.Oid.FriendlyName}");
+                    if (sanEntries.Count > 0)
+                        sb.AppendLine($"SANs (DNS / IP):    {string.Join(", ", sanEntries)}");
+                    if (keyUsages.Count > 0)
+                        sb.AppendLine($"Key Usage:          {string.Join(", ", keyUsages)}");
+                    sb.AppendLine();
+                }
+
+                sb.AppendLine("=== PEM ENCODED CERTIFICATE ===");
+                if (!string.IsNullOrEmpty(decodedText) && decodedText.Contains("-----BEGIN"))
+                {
+                    sb.AppendLine(decodedText.Trim());
+                }
+                else
+                {
+                    sb.AppendLine("-----BEGIN CERTIFICATE-----");
+                    sb.AppendLine(Convert.ToBase64String(rawBytes, Base64FormattingOptions.InsertLineBreaks));
+                    sb.AppendLine("-----END CERTIFICATE-----");
+                }
+
+                return sb.ToString();
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private async Task<string> FormatSecretCrlDetailsAsync(string keyName, byte[] rawBytes, string decodedText)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"=== CERTIFICATE REVOCATION LIST (CRL) DETAILS ({keyName}) ===");
+            sb.AppendLine($"Size:               {rawBytes.Length} bytes");
+
+            string sha256Fp = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(rawBytes));
+            sb.AppendLine($"SHA-256 Thumbprint: {sha256Fp}");
+
+            if (rawBytes.Length > 0 && rawBytes.Length <= 524288)
+            {
+                string b64 = Convert.ToBase64String(rawBytes);
+                bool isPem = !string.IsNullOrEmpty(decodedText) && decodedText.Contains("-----BEGIN");
+                string osslCmd = isPem
+                    ? $"printf '%s' '{b64}' | base64 -d | openssl crl -noout -text 2>/dev/null"
+                    : $"printf '%s' '{b64}' | base64 -d | openssl crl -inform DER -noout -text 2>/dev/null";
+
+                var res = await _ssh.RunCommandAsync(osslCmd, timeoutSeconds: 15);
+                if (res.IsSuccess && !string.IsNullOrWhiteSpace(res.Output))
+                {
+                    sb.AppendLine();
+                    sb.AppendLine(res.Output.Trim());
+                }
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("=== PEM ENCODED CRL ===");
+            if (!string.IsNullOrEmpty(decodedText) && decodedText.Contains("-----BEGIN"))
+            {
+                sb.AppendLine(decodedText.Trim());
+            }
+            else
+            {
+                sb.AppendLine("-----BEGIN X509 CRL-----");
+                sb.AppendLine(Convert.ToBase64String(rawBytes, Base64FormattingOptions.InsertLineBreaks));
+                sb.AppendLine("-----END X509 CRL-----");
+            }
+
+            return sb.ToString();
+        }
+
+        private static string FormatSecretPrivateKeyDetails(string keyName, byte[] rawBytes, string decodedText)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"=== PRIVATE KEY DETAILS ({keyName}) ===");
+
+            string keyFormat = "PEM / ASN.1 Private Key";
+            string algorithm = "Asymmetric Private Key";
+            bool isEncrypted = false;
+
+            if (!string.IsNullOrEmpty(decodedText))
+            {
+                if (decodedText.Contains("BEGIN EC PRIVATE KEY"))
+                {
+                    keyFormat = "SEC1 / Traditional EC Private Key";
+                    algorithm = "Elliptic Curve (ECDSA)";
+                }
+                else if (decodedText.Contains("BEGIN RSA PRIVATE KEY"))
+                {
+                    keyFormat = "PKCS#1 RSA Private Key";
+                    algorithm = "RSA";
+                }
+                else if (decodedText.Contains("BEGIN PRIVATE KEY"))
+                {
+                    keyFormat = "PKCS#8 Unencrypted Private Key";
+                }
+                else if (decodedText.Contains("BEGIN ENCRYPTED PRIVATE KEY") || decodedText.Contains("Proc-Type: 4,ENCRYPTED"))
+                {
+                    keyFormat = "PKCS#8 / PEM Encrypted Private Key";
+                    isEncrypted = true;
+                }
+                else if (decodedText.Contains("BEGIN OPENSSH PRIVATE KEY"))
+                {
+                    keyFormat = "OpenSSH Private Key";
+                }
+            }
+
+            if (!isEncrypted && !string.IsNullOrEmpty(decodedText))
+            {
+                try
+                {
+                    using var ecdsa = System.Security.Cryptography.ECDsa.Create();
+                    ecdsa.ImportFromPem(decodedText);
+                    algorithm = $"Elliptic Curve (ECDSA {ecdsa.KeySize}-bit)";
+                }
+                catch
+                {
+                    try
+                    {
+                        using var rsa = System.Security.Cryptography.RSA.Create();
+                        rsa.ImportFromPem(decodedText);
+                        algorithm = $"RSA ({rsa.KeySize}-bit)";
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            string sha256Fp = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(rawBytes));
+            sb.AppendLine($"Key Format:         {keyFormat}");
+            sb.AppendLine($"Algorithm / Size:   {algorithm}");
+            sb.AppendLine($"Encrypted:          {(isEncrypted ? "Yes (Passphrase Protected)" : "No")}");
+            sb.AppendLine($"Payload Size:       {rawBytes.Length} bytes");
+            sb.AppendLine($"SHA-256 Hash:       {sha256Fp}");
+            sb.AppendLine();
+            sb.AppendLine("=== PEM PRIVATE KEY ===");
+            sb.AppendLine(!string.IsNullOrEmpty(decodedText) ? decodedText.Trim() : Convert.ToBase64String(rawBytes, Base64FormattingOptions.InsertLineBreaks));
+
+            return sb.ToString();
         }
 
         public async Task<bool> DeleteSecretAsync(string name, string ns)

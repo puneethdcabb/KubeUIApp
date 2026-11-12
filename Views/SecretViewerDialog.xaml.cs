@@ -114,7 +114,7 @@ namespace KubeUIApp.Views
             var sfd = new SaveFileDialog
             {
                 FileName = SelectedEntry.Key,
-                Filter = "All Files (*.*)|*.*|Certificate Files (*.crt;*.cer;*.pem)|*.crt;*.cer;*.pem|CRL Files (*.crl)|*.crl|Text Files (*.txt)|*.txt"
+                Filter = "All Files (*.*)|*.*|Certificate Files (*.crt;*.cer;*.der;*.pem)|*.crt;*.cer;*.der;*.pem|Private Key Files (*.key;*.pem)|*.key;*.pem|CRL Files (*.crl)|*.crl|Text Files (*.txt)|*.txt"
             };
 
             if (sfd.ShowDialog() == true)
